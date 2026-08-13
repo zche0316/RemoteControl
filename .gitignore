@@ -1,0 +1,9 @@
+# Ignore virtualenv and caches
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+.DS_Store
+build/
+dist/

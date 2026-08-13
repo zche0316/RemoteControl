@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>RemoteControl — mouse test</title>
+  <style>
+    :root {
+      --bg: #1a1d23;
+      --panel: #242830;
+      --text: #e8eaed;
+      --muted: #9aa0a6;
+      --accent: #3d9a6a;
+      --danger: #c44;
+      --border: #3a3f4b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "SF Mono", ui-monospace, Menlo, monospace;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 1.5rem;
+    }
+    h1 { font-size: 1.1rem; font-weight: 600; margin: 0 0 0.25rem; }
+    p.sub { color: var(--muted); margin: 0 0 1.25rem; font-size: 0.85rem; }
+    .row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; margin-bottom: 0.75rem; }
+    label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; color: var(--muted); }
+    input, select, button {
+      font: inherit;
+      padding: 0.45rem 0.6rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--panel);
+      color: var(--text);
+    }
+    input { width: 7rem; }
+    button {
+      cursor: pointer;
+      background: var(--accent);
+      border-color: transparent;
+      color: #fff;
+    }
+    button.secondary { background: var(--panel); color: var(--text); border-color: var(--border); }
+    button.danger { background: var(--danger); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    #status {
+      display: inline-block;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      margin-bottom: 1rem;
+    }
+    #status.on { border-color: var(--accent); color: var(--accent); }
+    #status.off { color: var(--muted); }
+    #log {
+      margin-top: 1rem;
+      padding: 0.75rem;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      height: 14rem;
+      overflow: auto;
+      white-space: pre-wrap;
+      font-size: 0.75rem;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <h1>RemoteControl mouse test</h1>
+  <p class="sub">Connect to the local agent, then inject move / click / scroll via WebSocket.</p>
+
+  <div id="status" class="off">disconnected</div>
+
+  <div class="row">
+    <label>WebSocket URL
+      <input id="url" type="text" style="width: 18rem" value="ws://127.0.0.1:8765" />
+    </label>
+    <button id="connectBtn" type="button">Connect</button>
+    <button id="disconnectBtn" type="button" class="secondary" disabled>Disconnect</button>
+    <button id="pingBtn" type="button" class="secondary" disabled>Ping</button>
+  </div>
+
+  <div class="row">
+    <label>x <input id="x" type="number" value="400" step="1" /></label>
+    <label>y <input id="y" type="number" value="300" step="1" /></label>
+    <label>button
+      <select id="button">
+        <option value="left">left</option>
+        <option value="right">right</option>
+        <option value="middle">middle</option>
+      </select>
+    </label>
+    <button id="moveBtn" type="button" disabled>Move</button>
+    <button id="clickBtn" type="button" disabled>Click</button>
+  </div>
+
+  <div class="row">
+    <label>dx <input id="dx" type="number" value="0" step="1" /></label>
+    <label>dy <input id="dy" type="number" value="-3" step="1" /></label>
+    <button id="scrollBtn" type="button" disabled>Scroll</button>
+    <button id="clearBtn" type="button" class="secondary">Clear log</button>
+  </div>
+
+  <div id="log"></div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const logEl = $("log");
+    const statusEl = $("status");
+    let ws = null;
+
+    function log(line, kind) {
+      const t = new Date().toISOString().slice(11, 19);
+      const prefix = kind ? `[${kind}] ` : "";
+      logEl.textContent += `${t} ${prefix}${line}\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setConnected(on) {
+      statusEl.textContent = on ? "connected" : "disconnected";
+      statusEl.className = on ? "on" : "off";
+      $("connectBtn").disabled = on;
+      $("disconnectBtn").disabled = !on;
+      $("pingBtn").disabled = !on;
+      $("moveBtn").disabled = !on;
+      $("clickBtn").disabled = !on;
+      $("scrollBtn").disabled = !on;
+    }
+
+    function send(obj) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        log("not connected", "err");
+        return;
+      }
+      const raw = JSON.stringify(obj);
+      log(`→ ${raw}`);
+      ws.send(raw);
+    }
+
+    function coords() {
+      return {
+        x: Number($("x").value),
+        y: Number($("y").value),
+      };
+    }
+
+    $("connectBtn").onclick = () => {
+      if (ws) ws.close();
+      const url = $("url").value.trim();
+      log(`connecting ${url}`);
+      ws = new WebSocket(url);
+      ws.onopen = () => {
+        setConnected(true);
+        log("open");
+      };
+      ws.onclose = () => {
+        setConnected(false);
+        log("closed");
+        ws = null;
+      };
+      ws.onerror = () => log("socket error", "err");
+      ws.onmessage = (ev) => log(`← ${ev.data}`);
+    };
+
+    $("disconnectBtn").onclick = () => {
+      if (ws) ws.close();
+    };
+
+    $("pingBtn").onclick = () => send({ type: "ping" });
+    $("moveBtn").onclick = () => send({ type: "mouse.move", ...coords() });
+    $("clickBtn").onclick = () =>
+      send({ type: "mouse.click", ...coords(), button: $("button").value });
+    $("scrollBtn").onclick = () =>
+      send({
+        type: "mouse.scroll",
+        ...coords(),
+        dx: Number($("dx").value),
+        dy: Number($("dy").value),
+      });
+    $("clearBtn").onclick = () => {
+      logEl.textContent = "";
+    };
+
+    setConnected(false);
+  </script>
+</body>
+</html>
