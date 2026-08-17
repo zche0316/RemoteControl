@@ -6,7 +6,9 @@ import argparse
 import asyncio
 import json
 import logging
+import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 from websockets.asyncio.server import ServerConnection, serve
@@ -101,12 +103,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_logging(verbose: bool) -> None:
+    handlers: list[logging.Handler] = []
+    log_path = Path.home() / "Library" / "Logs" / "RemoteAgent.log"
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_path))
+    except OSError:
+        pass
+    if sys.stderr is not None:
+        handlers.append(logging.StreamHandler(sys.stderr))
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=handlers or None,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    _configure_logging(verbose=args.verbose)
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         logger.warning(
             "binding to %s — expects localhost only",
@@ -125,3 +141,6 @@ def main(argv: list[str] | None = None) -> None:
         run_status_app(listen=listen)
     except KeyboardInterrupt:
         logger.info("shutting down")
+    except Exception:
+        logger.exception("agent failed to start UI")
+        raise
