@@ -39,7 +39,12 @@ class Ping:
     type: str = "ping"
 
 
-Command = MouseMove | MouseClick | MouseScroll | Ping
+@dataclass(frozen=True)
+class ScreenInfo:
+    type: str = "screen.info"
+
+
+Command = MouseMove | MouseClick | MouseScroll | Ping | ScreenInfo
 
 _ALLOWED_BUTTONS = frozenset({"left", "right", "middle"})
 
@@ -72,6 +77,9 @@ def parse_message(data: Any) -> Command:
 
     if msg_type == "ping":
         return Ping()
+
+    if msg_type == "screen.info":
+        return ScreenInfo()
 
     if msg_type == "mouse.move":
         return MouseMove(x=_require_number(data, "x"), y=_require_number(data, "y"))

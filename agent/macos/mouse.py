@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import math
 import time
 
 from Quartz import (
+    CGDisplayBounds,
+    CGEventCreate,
     CGEventCreateMouseEvent,
     CGEventCreateScrollWheelEvent,
+    CGEventGetLocation,
     CGEventPost,
+    CGEventSetIntegerValueField,
+    CGMainDisplayID,
     CGPointMake,
     kCGEventLeftMouseDown,
     kCGEventLeftMouseUp,
@@ -20,6 +26,8 @@ from Quartz import (
     kCGMouseButtonCenter,
     kCGMouseButtonLeft,
     kCGMouseButtonRight,
+    kCGMouseEventDeltaX,
+    kCGMouseEventDeltaY,
     kCGScrollEventUnitLine,
 )
 
@@ -41,11 +49,60 @@ def _post(event) -> None:
     CGEventPost(kCGHIDEventTap, event)
 
 
-def move(x: float, y: float) -> None:
+def main_display_bounds() -> dict[str, float]:
+    """Primary display bounds in CoreGraphics global coordinates (top-left origin)."""
+    bounds = CGDisplayBounds(CGMainDisplayID())
+    return {
+        "x": float(bounds.origin.x),
+        "y": float(bounds.origin.y),
+        "width": float(bounds.size.width),
+        "height": float(bounds.size.height),
+    }
+
+
+def current_position() -> tuple[float, float]:
+    event = CGEventCreate(None)
+    if event is None:
+        return (0.0, 0.0)
+    loc = CGEventGetLocation(event)
+    return (float(loc.x), float(loc.y))
+
+
+def move(x: float, y: float, dx: float | None = None, dy: float | None = None) -> None:
     """Move the cursor to absolute screen coordinates (top-left origin)."""
     point = _point(x, y)
     event = CGEventCreateMouseEvent(None, kCGEventMouseMoved, point, kCGMouseButtonLeft)
+    if dx is not None:
+        CGEventSetIntegerValueField(event, kCGMouseEventDeltaX, int(round(dx)))
+    if dy is not None:
+        CGEventSetIntegerValueField(event, kCGMouseEventDeltaY, int(round(dy)))
     _post(event)
+
+
+def move_interpolated(
+    x: float,
+    y: float,
+    origin: tuple[float, float] | None = None,
+    max_step: float = 8.0,
+    max_steps: int = 48,
+) -> tuple[float, float]:
+    """Move to (x, y), inserting short steps when the jump is large. Returns the final position."""
+    start = origin if origin is not None else current_position()
+    dx = float(x) - start[0]
+    dy = float(y) - start[1]
+    dist = math.hypot(dx, dy)
+    if dist < 0.5:
+        return start
+
+    steps = min(max_steps, max(1, int(math.ceil(dist / max_step))))
+    prev_x, prev_y = start
+    for i in range(1, steps + 1):
+        t = i / steps
+        nx = start[0] + dx * t
+        ny = start[1] + dy * t
+        move(nx, ny, dx=nx - prev_x, dy=ny - prev_y)
+        prev_x, prev_y = nx, ny
+    return (float(x), float(y))
 
 
 def click(x: float, y: float, button: str = "left", pause_s: float = 0.01) -> None:
@@ -77,7 +134,6 @@ def scroll(x: float, y: float, dx: int = 0, dy: int = 0) -> None:
     if wheel1 == 0 and wheel2 == 0:
         return
 
-    # wheelCount=2 with vertical then horizontal deltas
     event = CGEventCreateScrollWheelEvent(
         None,
         kCGScrollEventUnitLine,

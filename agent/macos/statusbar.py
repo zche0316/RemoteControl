@@ -71,3 +71,19 @@ class AgentAppDelegate(NSObject):
         logger.info("quit from status menu")
         NSApp.terminate_(None)
 
+
+def run_status_app(listen: str) -> None:
+    """Block the main thread on the Cocoa run loop (status item + Quit)."""
+    global _listen, _quit_target
+    _listen = listen
+    app = NSApplication.sharedApplication()
+    app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+    delegate = AgentAppDelegate.alloc().init()
+    _quit_target = delegate
+    app.setDelegate_(delegate)
+    _retained.append(delegate)
+    _install_status_item(_listen)
+    logger.info("starting Cocoa run loop")
+    sys.argv[0] = "RemoteAgent"
+    app.run()
+

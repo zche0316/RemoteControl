@@ -1,0 +1,9 @@
+{
+  "name": "Remote Control Test",
+  "title": "Remote Control Test",
+  "subtitle": "Accessible Shared Quiz Game",
+  "version": "1.0.0",
+  "description": "An accessible shared monster dress-up quiz game with synchronized item choices, answer feedback, sounds, animations, reset and completion state for Squidly sessions.",
+  "author": "Joshua Aarons",
+  "icon": "dress-the-monster-logo.png"
+}

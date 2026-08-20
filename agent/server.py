@@ -20,6 +20,7 @@ from agent.protocol import (
     MouseScroll,
     Ping,
     ProtocolError,
+    ScreenInfo,
     error_response,
     ok_response,
     parse_message,
@@ -29,22 +30,73 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+_MOVE_HZ = 90.0
 
 
-def dispatch(command: Any) -> dict[str, Any]:
+class MovePump:
+    """Latest-wins cursor target; injects interpolated CGEvent moves off the WS read path."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._target: tuple[float, float] | None = None
+        self._current: tuple[float, float] | None = None
+        self._task: asyncio.Task[None] | None = None
+
+    def set_target(self, x: float, y: float) -> None:
+        with self._lock:
+            self._target = (float(x), float(y))
+
+    def note_position(self, x: float, y: float) -> None:
+        with self._lock:
+            self._current = (float(x), float(y))
+            self._target = None
+
+    def start(self) -> None:
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._run(), name="mouse-move-pump")
+
+    async def _run(self) -> None:
+        interval = 1.0 / _MOVE_HZ
+        while True:
+            await asyncio.sleep(interval)
+            with self._lock:
+                target = self._target
+                current = self._current
+                self._target = None
+            if target is None:
+                continue
+            try:
+                self._current = mouse.move_interpolated(target[0], target[1], origin=current)
+            except Exception:
+                logger.exception("move pump failed")
+
+
+_move_pump = MovePump()
+
+
+def screen_info_response() -> dict[str, Any]:
+    return ok_response("screen.info", **mouse.main_display_bounds())
+
+
+def dispatch(command: Any) -> dict[str, Any] | None:
     if isinstance(command, Ping):
         return ok_response("ping")
 
+    if isinstance(command, ScreenInfo):
+        return screen_info_response()
+
     if isinstance(command, MouseMove):
-        mouse.move(command.x, command.y)
-        return ok_response("mouse.move")
+        _move_pump.set_target(command.x, command.y)
+        return None
 
     if isinstance(command, MouseClick):
         mouse.click(command.x, command.y, button=command.button)
+        _move_pump.note_position(command.x, command.y)
         return ok_response("mouse.click")
 
     if isinstance(command, MouseScroll):
         mouse.scroll(command.x, command.y, dx=command.dx, dy=command.dy)
+        _move_pump.note_position(command.x, command.y)
         return ok_response("mouse.scroll")
 
     raise ProtocolError(f"unhandled command: {type(command).__name__}")
@@ -53,7 +105,9 @@ def dispatch(command: Any) -> dict[str, Any]:
 async def handle_client(websocket: ServerConnection) -> None:
     peer = websocket.remote_address
     logger.info("client connected: %s", peer)
+    _move_pump.start()
     try:
+        await websocket.send(json.dumps(screen_info_response()))
         async for raw in websocket:
             try:
                 data = json.loads(raw)
@@ -75,7 +129,8 @@ async def handle_client(websocket: ServerConnection) -> None:
                     msg_type if isinstance(msg_type, str) else None,
                 )
 
-            await websocket.send(json.dumps(response))
+            if response is not None:
+                await websocket.send(json.dumps(response))
     finally:
         logger.info("client disconnected: %s", peer)
 
