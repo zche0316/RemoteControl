@@ -16,8 +16,10 @@ from websockets.asyncio.server import ServerConnection, serve
 from agent.macos import mouse
 from agent.protocol import (
     MouseClick,
+    MouseDown,
     MouseMove,
     MouseScroll,
+    MouseUp,
     Ping,
     ProtocolError,
     ScreenInfo,
@@ -40,11 +42,16 @@ class MovePump:
         self._lock = threading.Lock()
         self._target: tuple[float, float] | None = None
         self._current: tuple[float, float] | None = None
+        self._held_button: str | None = None
         self._task: asyncio.Task[None] | None = None
 
     def set_target(self, x: float, y: float) -> None:
         with self._lock:
             self._target = (float(x), float(y))
+
+    def set_held_button(self, button: str | None) -> None:
+        with self._lock:
+            self._held_button = button
 
     def note_position(self, x: float, y: float) -> None:
         with self._lock:
@@ -62,11 +69,17 @@ class MovePump:
             with self._lock:
                 target = self._target
                 current = self._current
+                held = self._held_button
                 self._target = None
             if target is None:
                 continue
             try:
-                self._current = mouse.move_interpolated(target[0], target[1], origin=current)
+                self._current = mouse.move_interpolated(
+                    target[0],
+                    target[1],
+                    origin=current,
+                    drag_button=held,
+                )
             except Exception:
                 logger.exception("move pump failed")
 
@@ -89,7 +102,20 @@ def dispatch(command: Any) -> dict[str, Any] | None:
         _move_pump.set_target(command.x, command.y)
         return None
 
+    if isinstance(command, MouseDown):
+        mouse.down(command.x, command.y, button=command.button)
+        _move_pump.note_position(command.x, command.y)
+        _move_pump.set_held_button(command.button)
+        return ok_response("mouse.down")
+
+    if isinstance(command, MouseUp):
+        mouse.up(command.x, command.y, button=command.button)
+        _move_pump.note_position(command.x, command.y)
+        _move_pump.set_held_button(None)
+        return ok_response("mouse.up")
+
     if isinstance(command, MouseClick):
+        _move_pump.set_held_button(None)
         mouse.click(command.x, command.y, button=command.button)
         _move_pump.note_position(command.x, command.y)
         return ok_response("mouse.click")

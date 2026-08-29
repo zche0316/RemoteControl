@@ -16,10 +16,13 @@ from Quartz import (
     CGMainDisplayID,
     CGPointMake,
     kCGEventLeftMouseDown,
+    kCGEventLeftMouseDragged,
     kCGEventLeftMouseUp,
     kCGEventOtherMouseDown,
+    kCGEventOtherMouseDragged,
     kCGEventOtherMouseUp,
     kCGEventRightMouseDown,
+    kCGEventRightMouseDragged,
     kCGEventRightMouseUp,
     kCGEventMouseMoved,
     kCGHIDEventTap,
@@ -31,11 +34,26 @@ from Quartz import (
     kCGScrollEventUnitLine,
 )
 
-# (down_type, up_type, button_constant)
+# (down_type, up_type, drag_type, button_constant)
 _BUTTON_MAP = {
-    "left": (kCGEventLeftMouseDown, kCGEventLeftMouseUp, kCGMouseButtonLeft),
-    "right": (kCGEventRightMouseDown, kCGEventRightMouseUp, kCGMouseButtonRight),
-    "middle": (kCGEventOtherMouseDown, kCGEventOtherMouseUp, kCGMouseButtonCenter),
+    "left": (
+        kCGEventLeftMouseDown,
+        kCGEventLeftMouseUp,
+        kCGEventLeftMouseDragged,
+        kCGMouseButtonLeft,
+    ),
+    "right": (
+        kCGEventRightMouseDown,
+        kCGEventRightMouseUp,
+        kCGEventRightMouseDragged,
+        kCGMouseButtonRight,
+    ),
+    "middle": (
+        kCGEventOtherMouseDown,
+        kCGEventOtherMouseUp,
+        kCGEventOtherMouseDragged,
+        kCGMouseButtonCenter,
+    ),
 }
 
 
@@ -68,10 +86,27 @@ def current_position() -> tuple[float, float]:
     return (float(loc.x), float(loc.y))
 
 
-def move(x: float, y: float, dx: float | None = None, dy: float | None = None) -> None:
-    """Move the cursor to absolute screen coordinates (top-left origin)."""
+def move(
+    x: float,
+    y: float,
+    dx: float | None = None,
+    dy: float | None = None,
+    drag_button: str | None = None,
+) -> None:
+    """Move the cursor to absolute screen coordinates (top-left origin).
+
+    When `drag_button` is set, posts a dragged event for that button instead of MouseMoved.
+    """
+    if drag_button is not None:
+        if drag_button not in _BUTTON_MAP:
+            raise ValueError(f"unsupported button: {drag_button}")
+        _down, _up, event_type, mouse_button = _BUTTON_MAP[drag_button]
+    else:
+        event_type = kCGEventMouseMoved
+        mouse_button = kCGMouseButtonLeft
+
     point = _point(x, y)
-    event = CGEventCreateMouseEvent(None, kCGEventMouseMoved, point, kCGMouseButtonLeft)
+    event = CGEventCreateMouseEvent(None, event_type, point, mouse_button)
     if dx is not None:
         CGEventSetIntegerValueField(event, kCGMouseEventDeltaX, int(round(dx)))
     if dy is not None:
@@ -85,6 +120,7 @@ def move_interpolated(
     origin: tuple[float, float] | None = None,
     max_step: float = 8.0,
     max_steps: int = 48,
+    drag_button: str | None = None,
 ) -> tuple[float, float]:
     """Move to (x, y), inserting short steps when the jump is large. Returns the final position."""
     start = origin if origin is not None else current_position()
@@ -100,9 +136,29 @@ def move_interpolated(
         t = i / steps
         nx = start[0] + dx * t
         ny = start[1] + dy * t
-        move(nx, ny, dx=nx - prev_x, dy=ny - prev_y)
+        move(nx, ny, dx=nx - prev_x, dy=ny - prev_y, drag_button=drag_button)
         prev_x, prev_y = nx, ny
     return (float(x), float(y))
+
+
+def down(x: float, y: float, button: str = "left") -> None:
+    """Move to (x, y) and press a mouse button without releasing it."""
+    if button not in _BUTTON_MAP:
+        raise ValueError(f"unsupported button: {button}")
+    down_type, _up, _drag, mouse_button = _BUTTON_MAP[button]
+    move(x, y)
+    time.sleep(0.01)
+    _post(CGEventCreateMouseEvent(None, down_type, _point(x, y), mouse_button))
+
+
+def up(x: float, y: float, button: str = "left") -> None:
+    """Move to (x, y) and release a mouse button."""
+    if button not in _BUTTON_MAP:
+        raise ValueError(f"unsupported button: {button}")
+    _down, up_type, _drag, mouse_button = _BUTTON_MAP[button]
+    move(x, y, drag_button=button)
+    time.sleep(0.01)
+    _post(CGEventCreateMouseEvent(None, up_type, _point(x, y), mouse_button))
 
 
 def click(x: float, y: float, button: str = "left", pause_s: float = 0.01) -> None:
@@ -110,7 +166,7 @@ def click(x: float, y: float, button: str = "left", pause_s: float = 0.01) -> No
     if button not in _BUTTON_MAP:
         raise ValueError(f"unsupported button: {button}")
 
-    down_type, up_type, mouse_button = _BUTTON_MAP[button]
+    down_type, up_type, _drag, mouse_button = _BUTTON_MAP[button]
     point = _point(x, y)
 
     move(x, y)

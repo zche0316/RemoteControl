@@ -26,6 +26,22 @@ class MouseClick:
 
 
 @dataclass(frozen=True)
+class MouseDown:
+    type: str = "mouse.down"
+    x: float = 0.0
+    y: float = 0.0
+    button: str = "left"
+
+
+@dataclass(frozen=True)
+class MouseUp:
+    type: str = "mouse.up"
+    x: float = 0.0
+    y: float = 0.0
+    button: str = "left"
+
+
+@dataclass(frozen=True)
 class MouseScroll:
     type: str = "mouse.scroll"
     x: float = 0.0
@@ -44,7 +60,7 @@ class ScreenInfo:
     type: str = "screen.info"
 
 
-Command = MouseMove | MouseClick | MouseScroll | Ping | ScreenInfo
+Command = MouseMove | MouseClick | MouseDown | MouseUp | MouseScroll | Ping | ScreenInfo
 
 _ALLOWED_BUTTONS = frozenset({"left", "right", "middle"})
 
@@ -67,6 +83,13 @@ def _optional_int(data: dict[str, Any], key: str, default: int = 0) -> int:
     return int(value)
 
 
+def _require_button(data: dict[str, Any]) -> str:
+    button = data.get("button", "left")
+    if not isinstance(button, str) or button not in _ALLOWED_BUTTONS:
+        raise ProtocolError("button must be one of: left, right, middle")
+    return button
+
+
 def parse_message(data: Any) -> Command:
     if not isinstance(data, dict):
         raise ProtocolError("message must be a JSON object")
@@ -85,13 +108,24 @@ def parse_message(data: Any) -> Command:
         return MouseMove(x=_require_number(data, "x"), y=_require_number(data, "y"))
 
     if msg_type == "mouse.click":
-        button = data.get("button", "left")
-        if not isinstance(button, str) or button not in _ALLOWED_BUTTONS:
-            raise ProtocolError("button must be one of: left, right, middle")
         return MouseClick(
             x=_require_number(data, "x"),
             y=_require_number(data, "y"),
-            button=button,
+            button=_require_button(data),
+        )
+
+    if msg_type == "mouse.down":
+        return MouseDown(
+            x=_require_number(data, "x"),
+            y=_require_number(data, "y"),
+            button=_require_button(data),
+        )
+
+    if msg_type == "mouse.up":
+        return MouseUp(
+            x=_require_number(data, "x"),
+            y=_require_number(data, "y"),
+            button=_require_button(data),
         )
 
     if msg_type == "mouse.scroll":

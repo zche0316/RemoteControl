@@ -8,8 +8,9 @@
 <body shadow>
   <h1>RemoteControl</h1>
   <p class="sub">
-    In a Squidly session, <strong>host</strong> drags the pad; <strong>participant</strong> injects that path on the local agent.
-    Without Squidly, use Record then Replay on one machine.
+    Control-protocol test surface (no screen share). Moving on the pad is hover
+    (<code>mouse.move</code>); press is click or drag; wheel is scroll.
+    In Squidly, <strong>host</strong> publishes those events; <strong>participant</strong> injects them via the local RemoteAgent.
   </p>
 
   <div class="row">
@@ -30,7 +31,7 @@
     <label>Pad mode
       <select id="padMode">
         <option value="record" selected>Record (no inject)</option>
-        <option value="live">Live (inject while dragging)</option>
+        <option value="live">Live (inject hover/click/scroll/drag)</option>
       </select>
     </label>
     <label>Replay delay ms
@@ -42,13 +43,16 @@
   </div>
 
   <div id="padMeta">
-    <span id="padHint">Record: hold and drag to capture a path. Nothing is sent until Replay.</span>
+    <span id="padHint">Record: move, click, drag, and scroll on the pad. Nothing is sent until Replay.</span>
     <span id="padCoords">—</span>
   </div>
   <div id="padWrap">
     <canvas id="pad"></canvas>
   </div>
-  <p id="recHint">Recorded <code>mouse.move</code> requests (JSON lines): t is ms from pointer down.</p>
+  <div class="row" id="padActions" style="margin-top: 0.5rem">
+    <button id="clearPathBtn" type="button" class="secondary">Clear path</button>
+  </div>
+  <p id="recHint">Recorded events (JSON lines). <code>t</code> is ms from the first event. Replay sends the same types to the agent.</p>
   <textarea id="recordingJson" spellcheck="false" placeholder='{"type":"mouse.move","x":0,"y":0,"t":0}'></textarea>
 
   <div class="row" id="debugRow" style="margin-top: 1rem">

@@ -15,6 +15,7 @@ body {
   color: var(--text);
   min-height: 100vh;
   padding: 1.5rem;
+  padding-left: 20vw;
 }
 h1 { font-size: 1.1rem; font-weight: 600; margin: 0 0 0.25rem; }
 p.sub { color: var(--muted); margin: 0 0 1.25rem; font-size: 0.85rem; }
@@ -74,6 +75,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   height: 100%;
   display: block;
   cursor: crosshair;
+  touch-action: none;
+  user-select: none;
 }
 #padWrap.preview #pad { cursor: default; }
 #log, #recordingJson {
