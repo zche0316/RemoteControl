@@ -5,13 +5,15 @@ const FIREBASE_BUTTON_KEY = "button";
 const FIREBASE_CLICK_KEY = "click";
 const FIREBASE_SCROLL_KEY = "scroll";
 const FIREBASE_MIN_INTERVAL_MS = 50;
-const CLICK_SLOP_NORM = 0.01;
+const HOVER_SUPPRESS_AFTER_DISCRETE_MS = 120;
+const CLICK_SLOP_NORM = 0.04;
 
 const logEl = $("log");
 const statusEl = $("status");
 const roleEl = $("role");
 const canvas = $("pad");
 const padWrap = $("padWrap");
+const padStage = $("padStage");
 const padCoords = $("padCoords");
 const ctx = canvas.getContext("2d");
 
@@ -41,12 +43,16 @@ let eventSeq = 0;
 let lastFirebaseAt = 0;
 let lastMovePayload = "";
 let lastScrollAt = 0;
+let suppressHoverUntil = 0;
 let lastRecordMoveAt = 0;
 let lastRecordCoords = "";
 let participantConnecting = false;
 let pressStart = null;
 let pressButton = "left";
 let sentButtonDown = false;
+let hostMoveSetLog = 0;
+let recvMoveLog = 0;
+const fbPrimed = new Set();
 
 function hasSquidly() {
   return typeof window.SquidlyAPI !== "undefined";
@@ -57,6 +63,21 @@ function log(line, kind) {
   const prefix = kind ? `[${kind}] ` : "";
   logEl.textContent += `${t} ${prefix}${line}\n`;
   logEl.scrollTop = logEl.scrollHeight;
+}
+
+function previewFb(value) {
+  if (value === undefined) return "undefined";
+  if (value === null) return "null";
+  try {
+    const s = typeof value === "string" ? value : JSON.stringify(value);
+    return `${typeof value} ${s.length > 140 ? `${s.slice(0, 137)}...` : s}`;
+  } catch {
+    return `${typeof value} ${String(value)}`;
+  }
+}
+
+function sampleLog(count) {
+  return count <= 5 || count % 20 === 0;
 }
 
 function padMode() {
@@ -119,6 +140,7 @@ function applyRole(next) {
   const normalized =
     next === "host" || next === "participant" ? next : "local";
   const changed = normalized !== role;
+  if (changed) log(`role ${role} → ${normalized}`);
   role = normalized;
   roleEl.textContent = `role: ${role}`;
   roleEl.className = role;
@@ -251,6 +273,8 @@ function applyScreenInfo(info) {
   }
   screenBounds = { x, y, width, height };
   padWrap.style.aspectRatio = `${width} / ${height}`;
+  padStage.style.setProperty("--pad-ar", `${width} / ${height}`);
+  padStage.style.setProperty("--pad-ar-num", String(width / height));
   resizeCanvas();
   padCoords.textContent = `screen ${Math.round(width)}×${Math.round(height)} @ ${Math.round(x)},${Math.round(y)}`;
 }
@@ -373,6 +397,41 @@ function formatMovePayload(nx, ny) {
   return `${moveSeq}|${nx.toFixed(4)}|${ny.toFixed(4)}`;
 }
 
+function formatTypedPayload(kind, mapped, extra = []) {
+  return [nextEventSeq(), kind, mapped.nx.toFixed(4), mapped.ny.toFixed(4), ...extra].join("|");
+}
+
+function parseStreamPayload(value) {
+  const parts = parsePipes(value, 3);
+  if (!parts) return null;
+  if (parts.length === 3) {
+    const nx = Number(parts[1]);
+    const ny = Number(parts[2]);
+    if (!Number.isFinite(nx) || !Number.isFinite(ny)) return null;
+    return { kind: "move", mapped: mappedFromNorm(clamp01(nx), clamp01(ny)) };
+  }
+  const kind = parts[1];
+  const nx = Number(parts[2]);
+  const ny = Number(parts[3]);
+  if (!Number.isFinite(nx) || !Number.isFinite(ny)) return null;
+  const mapped = mappedFromNorm(clamp01(nx), clamp01(ny));
+  if (kind === "move" && parts.length === 4) {
+    return { kind: "move", mapped };
+  }
+  if ((kind === "click" || kind === "down" || kind === "up") && parts.length === 5) {
+    const button = parts[4];
+    if (button !== "left" && button !== "right" && button !== "middle") return null;
+    return { kind, mapped, button };
+  }
+  if (kind === "scroll" && parts.length === 6) {
+    const dx = Number(parts[4]);
+    const dy = Number(parts[5]);
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return null;
+    return { kind: "scroll", mapped, dx: Math.round(dx), dy: Math.round(dy) };
+  }
+  return null;
+}
+
 function parsePipes(value, minParts) {
   if (typeof value !== "string") return null;
   const parts = value.split("|");
@@ -429,14 +488,30 @@ function parseScrollPayload(value) {
 }
 
 function publishFirebase(key, payload) {
-  if (!hasSquidly() || role !== "host") return false;
+  if (!hasSquidly() || role !== "host") {
+    log(`fb set skipped ${key} squidly=${hasSquidly()} role=${role}`, "err");
+    return false;
+  }
+  const parts = typeof payload === "string" ? payload.split("|") : [];
+  const hoverMove = key === FIREBASE_MOVE_KEY && parts.length === 3;
+  if (hoverMove) hostMoveSetLog += 1;
+  if (!hoverMove || sampleLog(hostMoveSetLog)) {
+    log(`fb set ${key} ${payload}`);
+  }
   window.SquidlyAPI.firebaseSet(key, payload);
   return true;
+}
+
+function holdMoveAfterDiscrete() {
+  pendingMove = null;
+  lastMovePayload = "";
+  suppressHoverUntil = performance.now() + HOVER_SUPPRESS_AFTER_DISCRETE_MS;
 }
 
 function publishFirebaseMove(mapped) {
   if (!hasSquidly() || role !== "host") return false;
   const now = performance.now();
+  if (now < suppressHoverUntil) return false;
   if (now - lastFirebaseAt < FIREBASE_MIN_INTERVAL_MS) return false;
   const coordsKey = `${mapped.nx.toFixed(4)}|${mapped.ny.toFixed(4)}`;
   if (coordsKey === lastMovePayload) return false;
@@ -447,6 +522,7 @@ function publishFirebaseMove(mapped) {
 }
 
 function emitMove(mapped) {
+  if (role === "host" && pressed && !sentButtonDown) return false;
   if (role === "host") return publishFirebaseMove(mapped);
   if (injectsLocally()) {
     return send({ type: "mouse.move", x: mapped.x, y: mapped.y }, { silent: true });
@@ -465,13 +541,12 @@ function emitMove(mapped) {
 }
 
 function emitButton(mapped, action, button) {
-  const payload = `${nextEventSeq()}|${mapped.nx.toFixed(4)}|${mapped.ny.toFixed(4)}|${action}|${button}`;
+  const payload = formatTypedPayload(action, mapped, [button]);
   const type = action === "down" ? "mouse.down" : "mouse.up";
   recordEvent(type, mapped, { button });
   if (role === "host") {
-    const ok = publishFirebase(FIREBASE_BUTTON_KEY, payload);
-    if (ok) log(`host ${action} ${button}`);
-    return ok;
+    holdMoveAfterDiscrete();
+    return publishFirebase(FIREBASE_MOVE_KEY, payload);
   }
   if (injectsLocally()) {
     return send({ type, x: mapped.x, y: mapped.y, button }, { silent: true });
@@ -480,12 +555,11 @@ function emitButton(mapped, action, button) {
 }
 
 function emitClick(mapped, button) {
-  const payload = `${nextEventSeq()}|${mapped.nx.toFixed(4)}|${mapped.ny.toFixed(4)}|${button}`;
+  const payload = formatTypedPayload("click", mapped, [button]);
   recordEvent("mouse.click", mapped, { button });
   if (role === "host") {
-    const ok = publishFirebase(FIREBASE_CLICK_KEY, payload);
-    if (ok) log(`host click ${button}`);
-    return ok;
+    holdMoveAfterDiscrete();
+    return publishFirebase(FIREBASE_MOVE_KEY, payload);
   }
   if (injectsLocally()) {
     return send({ type: "mouse.click", x: mapped.x, y: mapped.y, button }, { silent: true });
@@ -495,11 +569,17 @@ function emitClick(mapped, button) {
 
 function emitScroll(mapped, dx, dy) {
   const now = performance.now();
-  if (now - lastScrollAt < FIREBASE_MIN_INTERVAL_MS) return false;
+  if (now - lastScrollAt < FIREBASE_MIN_INTERVAL_MS) {
+    if (role === "host") holdMoveAfterDiscrete();
+    return false;
+  }
   lastScrollAt = now;
-  const payload = `${nextEventSeq()}|${mapped.nx.toFixed(4)}|${mapped.ny.toFixed(4)}|${dx}|${dy}`;
+  const payload = formatTypedPayload("scroll", mapped, [dx, dy]);
   recordEvent("mouse.scroll", mapped, { dx, dy });
-  if (role === "host") return publishFirebase(FIREBASE_SCROLL_KEY, payload);
+  if (role === "host") {
+    holdMoveAfterDiscrete();
+    return publishFirebase(FIREBASE_MOVE_KEY, payload);
+  }
   if (injectsLocally()) {
     return send(
       { type: "mouse.scroll", x: mapped.x, y: mapped.y, dx, dy },
@@ -509,55 +589,142 @@ function emitScroll(mapped, dx, dy) {
   return isRecordMode();
 }
 
+function injectRemote(obj, { silent = false } = {}) {
+  const ok = send(obj, { silent: true });
+  if (!ok) {
+    log(`inject ${obj.type} failed (agent ws not open)`, "err");
+    return false;
+  }
+  if (!silent) {
+    const extra =
+      obj.type === "mouse.scroll"
+        ? ` dx=${obj.dx} dy=${obj.dy}`
+        : obj.button
+          ? ` ${obj.button}`
+          : "";
+    log(
+      `inject ${obj.type}${extra} → ${Math.round(obj.x)},${Math.round(obj.y)}`,
+    );
+  }
+  return true;
+}
+
 function applyRemoteMove(mapped) {
   showMapped(mapped);
   pushTrail(mapped);
   if (role === "participant") {
-    send({ type: "mouse.move", x: mapped.x, y: mapped.y }, { silent: true });
+    injectRemote(
+      { type: "mouse.move", x: mapped.x, y: mapped.y },
+      { silent: !sampleLog(recvMoveLog) },
+    );
   }
 }
 
 function applyRemoteButton(parsed) {
   showMapped(parsed.mapped);
   if (role !== "participant") return;
-  send(
-    {
-      type: parsed.action === "down" ? "mouse.down" : "mouse.up",
-      x: parsed.mapped.x,
-      y: parsed.mapped.y,
-      button: parsed.button,
-    },
-    { silent: true },
-  );
+  injectRemote({
+    type: parsed.action === "down" ? "mouse.down" : "mouse.up",
+    x: parsed.mapped.x,
+    y: parsed.mapped.y,
+    button: parsed.button,
+  });
 }
 
 function applyRemoteClick(parsed) {
   showMapped(parsed.mapped);
   if (role !== "participant") return;
-  send(
-    {
-      type: "mouse.click",
-      x: parsed.mapped.x,
-      y: parsed.mapped.y,
-      button: parsed.button,
-    },
-    { silent: true },
-  );
+  injectRemote({
+    type: "mouse.click",
+    x: parsed.mapped.x,
+    y: parsed.mapped.y,
+    button: parsed.button,
+  });
 }
 
 function applyRemoteScroll(parsed) {
   showMapped(parsed.mapped);
   if (role !== "participant") return;
-  send(
-    {
-      type: "mouse.scroll",
-      x: parsed.mapped.x,
-      y: parsed.mapped.y,
-      dx: parsed.dx,
-      dy: parsed.dy,
-    },
-    { silent: true },
-  );
+  injectRemote({
+    type: "mouse.scroll",
+    x: parsed.mapped.x,
+    y: parsed.mapped.y,
+    dx: parsed.dx,
+    dy: parsed.dy,
+  });
+}
+
+function onFirebaseValue(key, value) {
+  if (!fbPrimed.has(key)) {
+    fbPrimed.add(key);
+    log(`fb on ${key} primed ${previewFb(value)} (stale, ignored)`);
+    return;
+  }
+  const isMoveKey = key === FIREBASE_MOVE_KEY;
+  if (value == null || value === "") {
+    log(`fb on ${key} empty (initial)`);
+    return;
+  }
+  if (isMoveKey) recvMoveLog += 1;
+  const stream = isMoveKey ? parseStreamPayload(value) : null;
+  const hoverMove = stream?.kind === "move";
+  const quietMove = hoverMove && !sampleLog(recvMoveLog);
+  if (!quietMove) {
+    log(`fb on ${key} role=${role} ${previewFb(value)}`);
+  }
+  if (role !== "participant") {
+    if (!quietMove) log(`fb on ${key} ignored (role=${role})`);
+    return;
+  }
+
+  if (isMoveKey) {
+    if (!stream) {
+      log(`fb parse stream failed ${previewFb(value)}`, "err");
+      return;
+    }
+    if (stream.kind === "move") {
+      applyRemoteMove(stream.mapped);
+      return;
+    }
+    if (stream.kind === "down" || stream.kind === "up") {
+      applyRemoteButton({ mapped: stream.mapped, action: stream.kind, button: stream.button });
+      return;
+    }
+    if (stream.kind === "click") {
+      applyRemoteClick({ mapped: stream.mapped, button: stream.button });
+      return;
+    }
+    if (stream.kind === "scroll") {
+      applyRemoteScroll({ mapped: stream.mapped, dx: stream.dx, dy: stream.dy });
+    }
+    return;
+  }
+  if (key === FIREBASE_BUTTON_KEY) {
+    const parsed = parseButtonPayload(value);
+    if (!parsed) {
+      log(`fb parse button failed ${previewFb(value)}`, "err");
+      return;
+    }
+    applyRemoteButton(parsed);
+    return;
+  }
+  if (key === FIREBASE_CLICK_KEY) {
+    const parsed = parseClickPayload(value);
+    if (!parsed) {
+      log(`fb parse click failed ${previewFb(value)}`, "err");
+      return;
+    }
+    applyRemoteClick(parsed);
+    return;
+  }
+  if (key === FIREBASE_SCROLL_KEY) {
+    const parsed = parseScrollPayload(value);
+    if (!parsed) {
+      log(`fb parse scroll failed ${previewFb(value)}`, "err");
+      return;
+    }
+    applyRemoteScroll(parsed);
+  }
 }
 
 function connectAgent() {
@@ -650,6 +817,11 @@ canvas.addEventListener("pointerdown", (ev) => {
   pressButton = buttonName(ev.button);
   padWrap.classList.add("active");
   canvas.setPointerCapture(ev.pointerId);
+  if (role === "host") {
+    log(
+      `pad down ${pressButton} ${mapped.nx.toFixed(3)},${mapped.ny.toFixed(3)}`,
+    );
+  }
 });
 
 canvas.addEventListener("pointermove", (ev) => {
@@ -664,6 +836,7 @@ canvas.addEventListener("pointermove", (ev) => {
   if (!pressed || !pressStart) return;
   const dist = Math.hypot(mapped.nx - pressStart.nx, mapped.ny - pressStart.ny);
   if (!sentButtonDown && dist > CLICK_SLOP_NORM) {
+    if (role === "host") log(`pad drag-down ${pressButton}`);
     emitButton(pressStart, "down", pressButton);
     sentButtonDown = true;
   }
@@ -672,6 +845,7 @@ canvas.addEventListener("pointermove", (ev) => {
 function endPress(ev) {
   if (!pressed) return;
   const mapped = (ev && eventToMapped(ev)) || hover || pressStart;
+  const kind = sentButtonDown ? `drag-up ${pressButton}` : `click ${pressButton}`;
   pressed = false;
   padWrap.classList.remove("active");
   if (mapped) {
@@ -680,7 +854,10 @@ function endPress(ev) {
     } else {
       emitClick(mapped, pressButton);
     }
+  } else if (role === "host") {
+    log(`pad ${kind} ignored (no coords)`, "err");
   }
+  if (role === "host") log(`pad ${kind}`);
   sentButtonDown = false;
   pressStart = null;
   if (ev && canvas.hasPointerCapture?.(ev.pointerId)) {
@@ -699,13 +876,17 @@ canvas.addEventListener(
     ev.preventDefault();
     const mapped = eventToMapped(ev);
     if (!mapped) return;
-    queueMove(mapped);
+    showMapped(mapped);
+    if (role === "host") pendingMove = null;
     const toLines = (delta) => {
       if (delta === 0) return 0;
       const lines = Math.max(1, Math.round(Math.abs(delta) / 40));
       return delta > 0 ? -lines : lines;
     };
-    emitScroll(mapped, toLines(ev.deltaX), toLines(ev.deltaY));
+    const dx = toLines(ev.deltaX);
+    const dy = toLines(ev.deltaY);
+    if (role === "host") log(`pad wheel dx=${dx} dy=${dy}`);
+    emitScroll(mapped, dx, dy);
   },
   { passive: false },
 );
@@ -761,6 +942,78 @@ $("clearBtn").onclick = () => {
   logEl.textContent = "";
 };
 
+function fsElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+
+function padIsFullscreen() {
+  return fsElement() === padStage || padStage.classList.contains("expanded");
+}
+
+function setCssExpanded(on) {
+  padStage.classList.toggle("expanded", on);
+  document.body.classList.toggle("pad-expanded", on);
+}
+
+function updateFsButton() {
+  $("padFsBtn").textContent = padIsFullscreen() ? "Exit fullscreen" : "Fullscreen";
+}
+
+async function exitPadFullscreen() {
+  setCssExpanded(false);
+  const current = fsElement();
+  if (current) {
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (exit) {
+      try {
+        await exit.call(document);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  updateFsButton();
+  resizeCanvas();
+}
+
+async function togglePadFullscreen() {
+  if (padIsFullscreen()) {
+    await exitPadFullscreen();
+    return;
+  }
+  const req = padStage.requestFullscreen || padStage.webkitRequestFullscreen;
+  if (req) {
+    try {
+      await req.call(padStage);
+      updateFsButton();
+      resizeCanvas();
+      return;
+    } catch {
+      /* iframe / permission — fall through to CSS fill */
+    }
+  }
+  setCssExpanded(true);
+  updateFsButton();
+  resizeCanvas();
+}
+
+$("padFsBtn").onclick = () => togglePadFullscreen();
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && padStage.classList.contains("expanded")) {
+    exitPadFullscreen();
+  }
+});
+document.addEventListener("fullscreenchange", () => {
+  if (fsElement() === padStage) setCssExpanded(false);
+  updateFsButton();
+  resizeCanvas();
+});
+document.addEventListener("webkitfullscreenchange", () => {
+  if (fsElement() === padStage) setCssExpanded(false);
+  updateFsButton();
+  resizeCanvas();
+});
+
 function initSquidly() {
   if (!hasSquidly()) {
     applyRole("local");
@@ -769,40 +1022,21 @@ function initSquidly() {
   }
 
   const initial = window.session_info?.user;
+  log(`session_info.user=${initial ?? "undefined"}`);
   applyRole(initial === "host" || initial === "participant" ? initial : "host");
   log(
-    `SquidlyAPI present — firebase keys "${FIREBASE_MOVE_KEY}", "${FIREBASE_BUTTON_KEY}", "${FIREBASE_CLICK_KEY}", "${FIREBASE_SCROLL_KEY}"`,
+    `SquidlyAPI present — events multiplexed on firebase key "${FIREBASE_MOVE_KEY}"`,
   );
 
   window.SquidlyAPI.addSessionInfoListener((info) => {
+    log(`sessionInfo ${previewFb(info)}`);
     if (info && (info.user === "host" || info.user === "participant")) {
       applyRole(info.user);
     }
   });
 
   window.SquidlyAPI.firebaseOnValue(FIREBASE_MOVE_KEY, (value) => {
-    if (role !== "participant") return;
-    const mapped = parseMovePayload(value);
-    if (!mapped) return;
-    applyRemoteMove(mapped);
-  });
-  window.SquidlyAPI.firebaseOnValue(FIREBASE_BUTTON_KEY, (value) => {
-    if (role !== "participant") return;
-    const parsed = parseButtonPayload(value);
-    if (!parsed) return;
-    applyRemoteButton(parsed);
-  });
-  window.SquidlyAPI.firebaseOnValue(FIREBASE_CLICK_KEY, (value) => {
-    if (role !== "participant") return;
-    const parsed = parseClickPayload(value);
-    if (!parsed) return;
-    applyRemoteClick(parsed);
-  });
-  window.SquidlyAPI.firebaseOnValue(FIREBASE_SCROLL_KEY, (value) => {
-    if (role !== "participant") return;
-    const parsed = parseScrollPayload(value);
-    if (!parsed) return;
-    applyRemoteScroll(parsed);
+    onFirebaseValue(FIREBASE_MOVE_KEY, value);
   });
 }
 
