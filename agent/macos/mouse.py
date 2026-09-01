@@ -29,6 +29,7 @@ from Quartz import (
     kCGMouseButtonCenter,
     kCGMouseButtonLeft,
     kCGMouseButtonRight,
+    kCGMouseEventClickState,
     kCGMouseEventDeltaX,
     kCGMouseEventDeltaY,
     kCGScrollEventUnitLine,
@@ -114,6 +115,12 @@ def move(
     _post(event)
 
 
+def _post_button(event_type, x: float, y: float, mouse_button, click_state: int = 1) -> None:
+    event = CGEventCreateMouseEvent(None, event_type, _point(x, y), mouse_button)
+    CGEventSetIntegerValueField(event, kCGMouseEventClickState, int(click_state))
+    _post(event)
+
+
 def move_interpolated(
     x: float,
     y: float,
@@ -148,7 +155,7 @@ def down(x: float, y: float, button: str = "left") -> None:
     down_type, _up, _drag, mouse_button = _BUTTON_MAP[button]
     move(x, y)
     time.sleep(0.01)
-    _post(CGEventCreateMouseEvent(None, down_type, _point(x, y), mouse_button))
+    _post_button(down_type, x, y, mouse_button)
 
 
 def up(x: float, y: float, button: str = "left") -> None:
@@ -156,9 +163,9 @@ def up(x: float, y: float, button: str = "left") -> None:
     if button not in _BUTTON_MAP:
         raise ValueError(f"unsupported button: {button}")
     _down, up_type, _drag, mouse_button = _BUTTON_MAP[button]
-    move(x, y, drag_button=button)
+    move_interpolated(x, y, drag_button=button)
     time.sleep(0.01)
-    _post(CGEventCreateMouseEvent(None, up_type, _point(x, y), mouse_button))
+    _post_button(up_type, x, y, mouse_button)
 
 
 def click(x: float, y: float, button: str = "left", pause_s: float = 0.01) -> None:
@@ -167,14 +174,12 @@ def click(x: float, y: float, button: str = "left", pause_s: float = 0.01) -> No
         raise ValueError(f"unsupported button: {button}")
 
     down_type, up_type, _drag, mouse_button = _BUTTON_MAP[button]
-    point = _point(x, y)
 
     move(x, y)
     time.sleep(pause_s)
-
-    _post(CGEventCreateMouseEvent(None, down_type, point, mouse_button))
+    _post_button(down_type, x, y, mouse_button)
     time.sleep(pause_s)
-    _post(CGEventCreateMouseEvent(None, up_type, point, mouse_button))
+    _post_button(up_type, x, y, mouse_button)
 
 
 def scroll(x: float, y: float, dx: int = 0, dy: int = 0) -> None:

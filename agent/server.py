@@ -58,6 +58,10 @@ class MovePump:
             self._current = (float(x), float(y))
             self._target = None
 
+    def cancel_pending(self) -> None:
+        with self._lock:
+            self._target = None
+
     def start(self) -> None:
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run(), name="mouse-move-pump")
@@ -103,24 +107,28 @@ def dispatch(command: Any) -> dict[str, Any] | None:
         return None
 
     if isinstance(command, MouseDown):
+        _move_pump.cancel_pending()
         mouse.down(command.x, command.y, button=command.button)
         _move_pump.note_position(command.x, command.y)
         _move_pump.set_held_button(command.button)
         return ok_response("mouse.down")
 
     if isinstance(command, MouseUp):
+        _move_pump.cancel_pending()
         mouse.up(command.x, command.y, button=command.button)
         _move_pump.note_position(command.x, command.y)
         _move_pump.set_held_button(None)
         return ok_response("mouse.up")
 
     if isinstance(command, MouseClick):
+        _move_pump.cancel_pending()
         _move_pump.set_held_button(None)
         mouse.click(command.x, command.y, button=command.button)
         _move_pump.note_position(command.x, command.y)
         return ok_response("mouse.click")
 
     if isinstance(command, MouseScroll):
+        _move_pump.cancel_pending()
         mouse.scroll(command.x, command.y, dx=command.dx, dy=command.dy)
         _move_pump.note_position(command.x, command.y)
         return ok_response("mouse.scroll")
