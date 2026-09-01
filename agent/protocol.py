@@ -60,7 +60,43 @@ class ScreenInfo:
     type: str = "screen.info"
 
 
-Command = MouseMove | MouseClick | MouseDown | MouseUp | MouseScroll | Ping | ScreenInfo
+@dataclass(frozen=True)
+class KeyDown:
+    type: str = "key.down"
+    code: str = ""
+    key: str = ""
+    modifiers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class KeyUp:
+    type: str = "key.up"
+    code: str = ""
+    key: str = ""
+    modifiers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class KeyReleaseAll:
+    type: str = "key.releaseAll"
+
+
+Command = (
+    MouseMove
+    | MouseClick
+    | MouseDown
+    | MouseUp
+    | MouseScroll
+    | KeyDown
+    | KeyUp
+    | KeyReleaseAll
+    | Ping
+    | ScreenInfo
+)
+
+_ALLOWED_MODIFIERS = frozenset({"shift", "ctrl", "alt", "meta"})
+_MAX_CODE_LEN = 32
+_MAX_KEY_LEN = 16
 
 _ALLOWED_BUTTONS = frozenset({"left", "right", "middle"})
 
@@ -81,6 +117,41 @@ def _optional_int(data: dict[str, Any], key: str, default: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ProtocolError(f"{key} must be an integer")
     return int(value)
+
+
+def _require_code(data: dict[str, Any]) -> str:
+    code = data.get("code")
+    if not isinstance(code, str) or not code or len(code) > _MAX_CODE_LEN:
+        raise ProtocolError("code must be a non-empty string")
+    if not all(ch.isalnum() or ch in "._-" for ch in code):
+        raise ProtocolError("code contains invalid characters")
+    return code
+
+
+def _optional_key(data: dict[str, Any]) -> str:
+    if "key" not in data:
+        return ""
+    value = data["key"]
+    if not isinstance(value, str) or len(value) > _MAX_KEY_LEN:
+        raise ProtocolError("key must be a short string")
+    return value
+
+
+def _optional_modifiers(data: dict[str, Any]) -> tuple[str, ...]:
+    if "modifiers" not in data:
+        return ()
+    value = data["modifiers"]
+    if not isinstance(value, list):
+        raise ProtocolError("modifiers must be an array")
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str) or item not in _ALLOWED_MODIFIERS:
+            raise ProtocolError("modifiers must be shift, ctrl, alt, and/or meta")
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return tuple(out)
 
 
 def _require_button(data: dict[str, Any]) -> str:
@@ -135,6 +206,23 @@ def parse_message(data: Any) -> Command:
             dx=_optional_int(data, "dx", 0),
             dy=_optional_int(data, "dy", 0),
         )
+
+    if msg_type == "key.down":
+        return KeyDown(
+            code=_require_code(data),
+            key=_optional_key(data),
+            modifiers=_optional_modifiers(data),
+        )
+
+    if msg_type == "key.up":
+        return KeyUp(
+            code=_require_code(data),
+            key=_optional_key(data),
+            modifiers=_optional_modifiers(data),
+        )
+
+    if msg_type == "key.releaseAll":
+        return KeyReleaseAll()
 
     raise ProtocolError(f"unsupported type: {msg_type}")
 

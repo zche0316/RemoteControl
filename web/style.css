@@ -138,6 +138,20 @@ body.pad-expanded {
   overflow: hidden;
 }
 #padWrap.active { border-color: var(--accent); }
+#padWrap.keys-grabbed {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+#padKeys {
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 0.7rem;
+}
+#pad:focus {
+  outline: none;
+}
 #padWrap.preview { cursor: default; }
 #pad {
   width: 100%;

@@ -52,6 +52,8 @@ let pressButton = "left";
 let sentButtonDown = false;
 let hostMoveSetLog = 0;
 let recvMoveLog = 0;
+let keyEventLog = 0;
+const heldKeys = new Set();
 const fbPrimed = new Set();
 
 function hasSquidly() {
@@ -115,6 +117,8 @@ function setConnected(on) {
   $("disconnectBtn").disabled = !on;
   $("pingBtn").disabled = !on;
   $("moveBtn").disabled = !on || role === "host";
+  const typeBtn = $("typeTestBtn");
+  if (typeBtn) typeBtn.disabled = !on || role !== "local";
   updateReplayButtons();
 }
 
@@ -128,8 +132,8 @@ function participantHint() {
 
 function localHint() {
   return padMode() === "live"
-    ? "Live: hovering the pad moves the system cursor. Click, drag, and scroll inject immediately."
-    : "Record: hover, click, drag, and scroll are captured. Nothing is sent until Replay.";
+    ? "Live: hover/click/scroll inject immediately. Click the pad to grab keys (same Mac: the browser is usually frontmost, so use Type Hello in 2s to hit TextEdit)."
+    : "Record: hover, click, drag, and scroll are captured. Nothing is sent until Replay. Keyboard is live-only.";
 }
 
 function isRecordMode() {
@@ -141,6 +145,10 @@ function applyRole(next) {
     next === "host" || next === "participant" ? next : "local";
   const changed = normalized !== role;
   if (changed) log(`role ${role} → ${normalized}`);
+  if (normalized !== "local") {
+    releaseHeldKeys();
+    setKeysGrabbed(false);
+  }
   role = normalized;
   roleEl.textContent = `role: ${role}`;
   roleEl.className = role;
@@ -589,6 +597,117 @@ function emitScroll(mapped, dx, dy) {
   return isRecordMode();
 }
 
+function eventModifiers(ev) {
+  const mods = [];
+  if (ev.shiftKey) mods.push("shift");
+  if (ev.ctrlKey) mods.push("ctrl");
+  if (ev.altKey) mods.push("alt");
+  if (ev.metaKey) mods.push("meta");
+  return mods;
+}
+
+function keyboardGrabbed() {
+  return injectsLocally() && document.activeElement === canvas;
+}
+
+function setKeysGrabbed(on) {
+  padWrap.classList.toggle("keys-grabbed", on);
+  $("padKeys").hidden = !on;
+}
+
+function blockedShortcut(ev) {
+  return ev.metaKey && (ev.code === "KeyQ" || ev.key === "q" || ev.key === "Q");
+}
+
+function shouldIgnoreKeyEvent(ev) {
+  if (ev.isComposing || ev.key === "Process" || ev.key === "Dead") return true;
+  if (ev.repeat) return true;
+  if (!ev.code) return true;
+  return false;
+}
+
+function emitKey(action, ev) {
+  if (!injectsLocally()) return false;
+  const modifiers = eventModifiers(ev);
+  const payload = { type: action, code: ev.code, key: ev.key, modifiers };
+  const ok = send(payload, { silent: true });
+  keyEventLog += 1;
+  if (sampleLog(keyEventLog)) {
+    log(`${action} ${ev.code} ${ev.key} [${modifiers.join("+") || "none"}]`);
+  }
+  return ok;
+}
+
+function releaseHeldKeys() {
+  const codes = [...heldKeys];
+  heldKeys.clear();
+  if (!codes.length) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  for (const code of codes) {
+    send({ type: "key.up", code, key: "", modifiers: [] }, { silent: true });
+  }
+  send({ type: "key.releaseAll" }, { silent: true });
+  log(`keys released (${codes.length})`);
+}
+
+function charToKeyEvent(ch) {
+  if (ch === " ") return { code: "Space", key: " ", modifiers: [] };
+  if (ch === "\n") return { code: "Enter", key: "Enter", modifiers: [] };
+  if (ch >= "a" && ch <= "z") {
+    return { code: `Key${ch.toUpperCase()}`, key: ch, modifiers: [] };
+  }
+  if (ch >= "A" && ch <= "Z") {
+    return { code: `Key${ch}`, key: ch, modifiers: ["shift"] };
+  }
+  return null;
+}
+
+async function typeHelloTest() {
+  if (role !== "local") {
+    log("type test is local only", "err");
+    return;
+  }
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    log("not connected", "err");
+    return;
+  }
+  log("click TextEdit (or 备忘录) now — typing Hello in 2s");
+  $("typeTestBtn").disabled = true;
+  await new Promise((r) => setTimeout(r, 2000));
+  if (role !== "local" || !ws || ws.readyState !== WebSocket.OPEN) {
+    setConnected(ws && ws.readyState === WebSocket.OPEN);
+    return;
+  }
+  const text = "Hello";
+  const pause = () => new Promise((r) => setTimeout(r, 40));
+  for (const ch of text) {
+    const ev = charToKeyEvent(ch);
+    if (!ev) continue;
+    const shifted = ev.modifiers.includes("shift");
+    if (shifted) {
+      send(
+        { type: "key.down", code: "ShiftLeft", key: "Shift", modifiers: ["shift"] },
+        { silent: true },
+      );
+      await pause();
+    }
+    send(
+      { type: "key.down", code: ev.code, key: ev.key, modifiers: ev.modifiers },
+      { silent: true },
+    );
+    await pause();
+    send({ type: "key.up", code: ev.code, key: ev.key, modifiers: ev.modifiers }, { silent: true });
+    await pause();
+    if (shifted) {
+      send({ type: "key.up", code: "ShiftLeft", key: "Shift", modifiers: [] }, { silent: true });
+      await pause();
+    }
+  }
+  send({ type: "key.releaseAll" }, { silent: true });
+  log(`typed ${JSON.stringify(text)} via key.down/up`);
+  setConnected(true);
+}
+
 function injectRemote(obj, { silent = false } = {}) {
   const ok = send(obj, { silent: true });
   if (!ok) {
@@ -751,6 +870,8 @@ function connectAgent() {
     pendingMove = null;
     sentButtonDown = false;
     pressStart = null;
+    heldKeys.clear();
+    setKeysGrabbed(false);
     padWrap.classList.remove("active");
     log("closed");
     ws = null;
@@ -790,7 +911,10 @@ function connectAgent() {
         data.type === "mouse.click" ||
         data.type === "mouse.down" ||
         data.type === "mouse.up" ||
-        data.type === "mouse.scroll")
+        data.type === "mouse.scroll" ||
+        data.type === "key.down" ||
+        data.type === "key.up" ||
+        data.type === "key.releaseAll")
     ) {
       return;
     }
@@ -809,6 +933,7 @@ canvas.addEventListener("pointerdown", (ev) => {
   if (!mapped) return;
   ev.preventDefault();
   stopReplay();
+  canvas.focus();
   queueMove(mapped);
 
   pressed = true;
@@ -924,14 +1049,18 @@ $("copyRecBtn").onclick = async () => {
   }
 };
 $("padMode").onchange = () => {
+  releaseHeldKeys();
+  canvas.blur();
   if (role === "local") {
     $("padHint").textContent = localHint();
   }
   recording = [];
   recordStart = 0;
   dumpRecording();
+  setConnected(ws && ws.readyState === WebSocket.OPEN);
 };
 $("pingBtn").onclick = () => send({ type: "ping" });
+$("typeTestBtn").onclick = () => typeHelloTest();
 $("moveBtn").onclick = () =>
   send({ type: "mouse.move", x: Number($("x").value), y: Number($("y").value) }, { silent: true });
 $("clearPathBtn").onclick = () => {
@@ -1001,8 +1130,54 @@ $("padFsBtn").onclick = () => togglePadFullscreen();
 document.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape" && padStage.classList.contains("expanded")) {
     exitPadFullscreen();
+    return;
+  }
+  if (!keyboardGrabbed()) return;
+  if (padIsFullscreen() && ev.key === "Escape") return;
+  if (shouldIgnoreKeyEvent(ev)) {
+    if (ev.repeat && heldKeys.has(ev.code)) ev.preventDefault();
+    return;
+  }
+  if (blockedShortcut(ev)) {
+    ev.preventDefault();
+    log("blocked Cmd+Q", "err");
+    return;
+  }
+  ev.preventDefault();
+  if (heldKeys.has(ev.code)) return;
+  heldKeys.add(ev.code);
+  emitKey("key.down", ev);
+});
+
+document.addEventListener("keyup", (ev) => {
+  if (!keyboardGrabbed() && !heldKeys.has(ev.code)) return;
+  if (shouldIgnoreKeyEvent(ev) && ev.key !== "Dead") return;
+  if (!heldKeys.has(ev.code)) return;
+  heldKeys.delete(ev.code);
+  ev.preventDefault();
+  emitKey("key.up", ev);
+});
+
+canvas.addEventListener("focus", () => {
+  if (injectsLocally()) setKeysGrabbed(true);
+});
+
+canvas.addEventListener("blur", () => {
+  setKeysGrabbed(false);
+  releaseHeldKeys();
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    canvas.blur();
+    releaseHeldKeys();
   }
 });
+
+window.addEventListener("blur", () => {
+  releaseHeldKeys();
+});
+
 document.addEventListener("fullscreenchange", () => {
   if (fsElement() === padStage) setCssExpanded(false);
   updateFsButton();

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>RemoteControl — mouse test</title>
+  <title>RemoteControl — mouse/keyboard test</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body shadow>
@@ -10,7 +10,8 @@
   <p class="sub">
     Control-protocol test surface (no screen share). Moving on the pad is hover
     (<code>mouse.move</code>); press is click or drag; wheel is scroll.
-    In Squidly, <strong>host</strong> publishes those events; <strong>participant</strong> injects them via the local RemoteAgent.
+    In local Live mode, click the pad to grab the keyboard (<code>key.down</code> / <code>key.up</code>).
+    In Squidly, <strong>host</strong> publishes mouse events; <strong>participant</strong> injects them via the local RemoteAgent.
   </p>
 
   <div class="row">
@@ -31,7 +32,7 @@
     <label>Pad mode
       <select id="padMode">
         <option value="record" selected>Record (no inject)</option>
-        <option value="live">Live (inject hover/click/scroll/drag)</option>
+        <option value="live">Live (inject hover/click/scroll/drag/keys)</option>
       </select>
     </label>
     <label>Replay delay ms
@@ -40,18 +41,20 @@
     <button id="replayBtn" type="button" disabled>Replay</button>
     <button id="stopReplayBtn" type="button" class="secondary" disabled>Stop replay</button>
     <button id="copyRecBtn" type="button" class="secondary" disabled>Copy JSON</button>
+    <button id="typeTestBtn" type="button" class="secondary" disabled>Type Hello in 2s</button>
   </div>
 
   <div id="padStage">
     <div id="padMeta">
       <span id="padHint">Record: move, click, drag, and scroll on the pad. Nothing is sent until Replay.</span>
       <span class="padMetaRight">
+        <span id="padKeys" hidden>keys</span>
         <span id="padCoords">—</span>
         <button id="padFsBtn" type="button" class="secondary">Fullscreen</button>
       </span>
     </div>
     <div id="padWrap">
-      <canvas id="pad"></canvas>
+      <canvas id="pad" tabindex="0"></canvas>
     </div>
   </div>
   <div class="row" id="padActions" style="margin-top: 0.5rem">

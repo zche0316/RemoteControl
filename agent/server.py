@@ -13,8 +13,11 @@ from typing import Any
 
 from websockets.asyncio.server import ServerConnection, serve
 
-from agent.macos import mouse
+from agent.macos import keyboard, mouse
 from agent.protocol import (
+    KeyDown,
+    KeyReleaseAll,
+    KeyUp,
     MouseClick,
     MouseDown,
     MouseMove,
@@ -133,6 +136,18 @@ def dispatch(command: Any) -> dict[str, Any] | None:
         _move_pump.note_position(command.x, command.y)
         return ok_response("mouse.scroll")
 
+    if isinstance(command, KeyDown):
+        keyboard.down(command.code, list(command.modifiers))
+        return ok_response("key.down")
+
+    if isinstance(command, KeyUp):
+        keyboard.up(command.code, list(command.modifiers))
+        return ok_response("key.up")
+
+    if isinstance(command, KeyReleaseAll):
+        keyboard.release_all()
+        return ok_response("key.releaseAll")
+
     raise ProtocolError(f"unhandled command: {type(command).__name__}")
 
 
@@ -166,6 +181,9 @@ async def handle_client(websocket: ServerConnection) -> None:
             if response is not None:
                 await websocket.send(json.dumps(response))
     finally:
+        released = keyboard.release_all()
+        if released:
+            logger.info("released %s held key(s) on disconnect", released)
         logger.info("client disconnected: %s", peer)
 
 
@@ -179,7 +197,7 @@ async def run_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Local macOS remote-control agent (WebSocket → CGEvent mouse)",
+        description="Local macOS remote-control agent (WebSocket → CGEvent mouse/keyboard)",
     )
     parser.add_argument("--host", default=DEFAULT_HOST, help="bind address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="bind port (default: 8765)")
