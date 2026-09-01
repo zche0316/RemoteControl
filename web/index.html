@@ -42,12 +42,17 @@
     <button id="copyRecBtn" type="button" class="secondary" disabled>Copy JSON</button>
   </div>
 
-  <div id="padMeta">
-    <span id="padHint">Record: move, click, drag, and scroll on the pad. Nothing is sent until Replay.</span>
-    <span id="padCoords">—</span>
-  </div>
-  <div id="padWrap">
-    <canvas id="pad"></canvas>
+  <div id="padStage">
+    <div id="padMeta">
+      <span id="padHint">Record: move, click, drag, and scroll on the pad. Nothing is sent until Replay.</span>
+      <span class="padMetaRight">
+        <span id="padCoords">—</span>
+        <button id="padFsBtn" type="button" class="secondary">Fullscreen</button>
+      </span>
+    </div>
+    <div id="padWrap">
+      <canvas id="pad"></canvas>
+    </div>
   </div>
   <div class="row" id="padActions" style="margin-top: 0.5rem">
     <button id="clearPathBtn" type="button" class="secondary">Clear path</button>
