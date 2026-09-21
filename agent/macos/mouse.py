@@ -231,7 +231,10 @@ def window_control_state(window_id: int) -> tuple[str, dict | None]:
             or float(bounds.get("Width", 0)) <= 0 or float(bounds.get("Height", 0)) <= 0):
         return ("window_unavailable", None)
     for window in windows[:target_index]:
-        if float(window.get("kCGWindowAlpha", 1)) < 0.5:
+        # System overlays such as the menu bar and Dock have non-zero layers,
+        # and some report desktop-sized bounds. They do not represent a shared
+        # application window being covered.
+        if int(window.get("kCGWindowLayer", 0)) != 0 or float(window.get("kCGWindowAlpha", 1)) < 0.5:
             continue
         if _rect_overlaps(bounds, window.get("kCGWindowBounds") or {}):
             return ("window_obscured", bounds)

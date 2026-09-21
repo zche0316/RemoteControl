@@ -41,12 +41,12 @@ class WindowSurfaceTests(unittest.TestCase):
             self.assertEqual(mouse.window_control_state(42)[0], "ready")
             self.assertEqual(mouse.window_point(42, 0.5, 0.5), (200, 200))
 
-    def test_floating_cover_also_pauses_the_window(self):
+    def test_system_layer_does_not_pause_the_shared_window(self):
         target = window(42, 0, 0, 400, 400)
         cover = window(43, 0, 0, 200, 200)
         cover["kCGWindowLayer"] = 3
         with patch.object(mouse, "CGWindowListCopyWindowInfo", return_value=[cover, target]):
-            self.assertEqual(mouse.window_control_state(42)[0], "window_obscured")
+            self.assertEqual(mouse.window_control_state(42)[0], "ready")
 
 
 if __name__ == "__main__":
