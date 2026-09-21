@@ -21,18 +21,25 @@ class WindowSurfaceTests(unittest.TestCase):
         self.assertEqual(result["width"], 600)
         self.assertEqual(result["id"], 42)
 
-    def test_any_front_window_pauses_the_whole_shared_window(self):
+    def test_only_an_overlapping_front_window_pauses_the_shared_window(self):
         target = window(42, 0, 0, 400, 400)
         cover = window(43, 0, 0, 200, 400)
         with patch.object(mouse, "CGWindowListCopyWindowInfo", return_value=[cover, target]):
             self.assertIsNone(mouse.window_point(42, 0.25, 0.5))
             self.assertIsNone(mouse.window_point(42, 0.75, 0.5))
-            self.assertEqual(mouse.window_control_state(42)[0], "window_not_frontmost")
+            self.assertEqual(mouse.window_control_state(42)[0], "window_obscured")
         with patch.object(mouse, "CGWindowListCopyWindowInfo", return_value=[target, cover]):
             self.assertEqual(mouse.window_point(42, 0.75, 0.5), (300, 200))
         with patch.object(mouse, "CGWindowListCopyWindowInfo", return_value=[cover]):
             self.assertIsNone(mouse.window_point(42, 0.75, 0.5))
             self.assertEqual(mouse.window_control_state(42)[0], "window_unavailable")
+
+    def test_front_window_elsewhere_does_not_pause_pointer_control(self):
+        target = window(42, 0, 0, 400, 400)
+        elsewhere = window(43, 500, 0, 300, 300)
+        with patch.object(mouse, "CGWindowListCopyWindowInfo", return_value=[elsewhere, target]):
+            self.assertEqual(mouse.window_control_state(42)[0], "ready")
+            self.assertEqual(mouse.window_point(42, 0.5, 0.5), (200, 200))
 
     def test_floating_cover_also_pauses_the_window(self):
         target = window(42, 0, 0, 400, 400)
@@ -65,10 +72,10 @@ class AgentInjectionTests(unittest.IsolatedAsyncioTestCase):
         matched = {'id': 42, 'kind': 'window', 'x': 0, 'y': 0, 'width': 400, 'height': 400}
         with (patch.object(server._move_pump, 'start'),
               patch.object(server.mouse, 'match_captured_surface', return_value=matched),
-              patch.object(server.mouse, 'window_control_state', return_value=('window_not_frontmost', window(42, 0, 0, 400, 400)['kCGWindowBounds'])),
+              patch.object(server.mouse, 'window_control_state', return_value=('window_obscured', window(42, 0, 0, 400, 400)['kCGWindowBounds'])),
               patch.object(server.mouse, 'click') as click,
               patch.object(server.keyboard, 'release_all', return_value=0)):
             await server.handle_client(socket)
         click.assert_not_called()
         self.assertEqual(socket.sent[-1]['ok'], False)
-        self.assertEqual(socket.sent[-1]['pauseReason'], 'window_not_frontmost')
+        self.assertEqual(socket.sent[-1]['pauseReason'], 'window_obscured')

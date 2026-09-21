@@ -233,8 +233,6 @@ def window_control_state(window_id: int) -> tuple[str, dict | None]:
     for window in windows[:target_index]:
         if float(window.get("kCGWindowAlpha", 1)) < 0.5:
             continue
-        if int(window.get("kCGWindowLayer", 0)) == 0:
-            return ("window_not_frontmost", bounds)
         if _rect_overlaps(bounds, window.get("kCGWindowBounds") or {}):
             return ("window_obscured", bounds)
     return ("ready", bounds)
@@ -254,7 +252,8 @@ def window_point(window_id: int, nx: float, ny: float) -> tuple[float, float] | 
 
 
 def window_is_frontmost(window_id: int) -> bool:
-    return window_control_state(window_id)[0] == "ready"
+    windows = list_windows()
+    return bool(windows and windows[0]["id"] == window_id)
 
 
 def current_position() -> tuple[float, float]:
