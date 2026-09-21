@@ -322,3 +322,7 @@ def main(argv: list[str] | None = None) -> None:
     except Exception:
         logger.exception("agent failed to start UI")
         raise
+
+
+if __name__ == "__main__":
+    main()
