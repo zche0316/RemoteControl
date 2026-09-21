@@ -26,6 +26,7 @@ from agent.protocol import (
     Ping,
     ProtocolError,
     ScreenInfo,
+    SurfaceMatch,
     error_response,
     ok_response,
     parse_message,
@@ -36,6 +37,23 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 _MOVE_HZ = 90.0
+
+_PAUSE_MESSAGES = {
+    "window_unavailable": "Shared window is unavailable. Restore it to resume control.",
+    "window_not_frontmost": "Remote control paused. Bring the shared window to the front to resume.",
+    "window_obscured": "Remote control paused. Move the covering window away to resume.",
+    "surface_unmatched": "Remote control paused. The shared window could not be identified.",
+}
+
+
+class WindowControlPaused(ProtocolError):
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(_PAUSE_MESSAGES[reason])
+
+
+def _pause_response(reason: str, msg_type: str) -> dict[str, Any]:
+    return {**error_response(_PAUSE_MESSAGES[reason], msg_type), "controlAllowed": False, "pauseReason": reason}
 
 
 class MovePump:
@@ -64,6 +82,14 @@ class MovePump:
     def cancel_pending(self) -> None:
         with self._lock:
             self._target = None
+
+    def release_held(self) -> None:
+        with self._lock:
+            self._target = None
+            button = self._held_button
+            self._held_button = None
+        if button is not None:
+            mouse.release_button(button)
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -98,12 +124,31 @@ def screen_info_response() -> dict[str, Any]:
     return ok_response("screen.info", **mouse.main_display_bounds())
 
 
+def _pause_active_input() -> None:
+    _move_pump.release_held()
+    keyboard.release_all()
+
+
 def dispatch(command: Any) -> dict[str, Any] | None:
     if isinstance(command, Ping):
         return ok_response("ping")
 
     if isinstance(command, ScreenInfo):
         return screen_info_response()
+
+    if isinstance(command, SurfaceMatch):
+        matched = mouse.match_captured_surface(command.surface, command.width, command.height, command.id)
+        if not matched:
+            reason = "window_unavailable" if command.id is not None else "surface_unmatched"
+            return _pause_response(reason, "surface.match")
+        reason = mouse.window_control_state(matched["id"])[0] if matched["kind"] == "window" else "ready"
+        return ok_response(
+            "surface.match", guardedInput=True,
+            controlAllowed=reason == "ready",
+            pauseReason=None if reason == "ready" else reason,
+            message=None if reason == "ready" else _PAUSE_MESSAGES[reason],
+            **matched,
+        )
 
     if isinstance(command, MouseMove):
         _move_pump.set_target(command.x, command.y)
@@ -155,6 +200,7 @@ async def handle_client(websocket: ServerConnection) -> None:
     peer = websocket.remote_address
     logger.info("client connected: %s", peer)
     _move_pump.start()
+    matched_surface: dict[str, Any] | None = None
     try:
         await websocket.send(json.dumps(screen_info_response()))
         async for raw in websocket:
@@ -165,9 +211,33 @@ async def handle_client(websocket: ServerConnection) -> None:
                 continue
 
             try:
+                msg_type = data.get("type") if isinstance(data, dict) else None
+                if msg_type in {"mouse.move", "mouse.down", "mouse.up", "mouse.click", "mouse.scroll", "key.down", "key.up"}:
+                    if not matched_surface or data.get("surfaceId") != matched_surface["id"]:
+                        raise ProtocolError("captured surface is not matched")
+                    if matched_surface["kind"] == "window":
+                        reason, bounds = mouse.window_control_state(matched_surface["id"])
+                        if reason != "ready" or bounds is None:
+                            raise WindowControlPaused(reason)
+                        if msg_type.startswith("mouse."):
+                            nx, ny = data.get("nx"), data.get("ny")
+                            if (isinstance(nx, bool) or isinstance(ny, bool)
+                                    or not isinstance(nx, (int, float)) or not isinstance(ny, (int, float))
+                                    or not (0 <= nx <= 1 and 0 <= ny <= 1)):
+                                raise ProtocolError("missing window-relative position")
+                            data["x"] = float(bounds["X"]) + float(nx) * float(bounds["Width"])
+                            data["y"] = float(bounds["Y"]) + float(ny) * float(bounds["Height"])
                 command = parse_message(data)
                 response = dispatch(command)
+                if isinstance(command, SurfaceMatch):
+                    matched_surface = response if response and response.get("ok") else None
+                    if not response.get("controlAllowed", False):
+                        _pause_active_input()
+            except WindowControlPaused as exc:
+                _pause_active_input()
+                response = _pause_response(exc.reason, msg_type)
             except ProtocolError as exc:
+                _pause_active_input()
                 msg_type = data.get("type") if isinstance(data, dict) else None
                 response = error_response(str(exc), msg_type if isinstance(msg_type, str) else None)
             except Exception as exc:
@@ -181,6 +251,7 @@ async def handle_client(websocket: ServerConnection) -> None:
             if response is not None:
                 await websocket.send(json.dumps(response))
     finally:
+        _move_pump.release_held()
         released = keyboard.release_all()
         if released:
             logger.info("released %s held key(s) on disconnect", released)

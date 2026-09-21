@@ -13,8 +13,13 @@ from Quartz import (
     CGEventGetLocation,
     CGEventPost,
     CGEventSetIntegerValueField,
+    CGGetActiveDisplayList,
     CGMainDisplayID,
     CGPointMake,
+    CGWindowListCopyWindowInfo,
+    kCGNullWindowID,
+    kCGWindowListExcludeDesktopElements,
+    kCGWindowListOptionOnScreenOnly,
     kCGEventLeftMouseDown,
     kCGEventLeftMouseDragged,
     kCGEventLeftMouseUp,
@@ -68,15 +73,188 @@ def _post(event) -> None:
     CGEventPost(kCGHIDEventTap, event)
 
 
-def main_display_bounds() -> dict[str, float]:
-    """Primary display bounds in CoreGraphics global coordinates (top-left origin)."""
-    bounds = CGDisplayBounds(CGMainDisplayID())
+_SIZE_ABS_TOL = 16.0
+_SIZE_REL_TOL = 0.03
+_SCALES = (1.0, 2.0, 3.0)
+_AMBIGUOUS_ERR = 8.0
+
+
+def _quartz_rect_from_cg(bounds) -> dict[str, float]:
     return {
         "x": float(bounds.origin.x),
         "y": float(bounds.origin.y),
         "width": float(bounds.size.width),
         "height": float(bounds.size.height),
     }
+
+
+def main_display_bounds() -> dict[str, float]:
+    """Primary display bounds in CoreGraphics global coordinates (top-left origin)."""
+    return _quartz_rect_from_cg(CGDisplayBounds(CGMainDisplayID()))
+
+
+def list_displays() -> list[dict[str, float | int]]:
+    max_displays = 16
+    result = CGGetActiveDisplayList(max_displays, None, None)
+    ids: list[int] = []
+    if isinstance(result, tuple) and len(result) >= 3:
+        err, displays, count = result[0], result[1], result[2]
+        if not err and displays is not None:
+            ids = [int(displays[i]) for i in range(int(count))]
+    if not ids:
+        ids = [int(CGMainDisplayID())]
+    out: list[dict[str, float | int]] = []
+    for display_id in ids:
+        rect = _quartz_rect_from_cg(CGDisplayBounds(display_id))
+        out.append({"id": int(display_id), **rect})
+    return out
+
+
+def list_windows() -> list[dict[str, float | str]]:
+    """On-screen layer-0 windows. kCGWindowBounds is already Quartz top-left."""
+    options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements
+    raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) or []
+    out: list[dict[str, float | str]] = []
+    for info in raw:
+        try:
+            layer = int(info.get("kCGWindowLayer", 1))
+            alpha = float(info.get("kCGWindowAlpha", 1))
+            bounds = info.get("kCGWindowBounds") or {}
+            width = float(bounds.get("Width", 0))
+            height = float(bounds.get("Height", 0))
+            x = float(bounds.get("X", 0))
+            y = float(bounds.get("Y", 0))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if layer != 0 or alpha < 0.5 or width < 64 or height < 48:
+            continue
+        out.append(
+            {
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+                "name": str(info.get("kCGWindowName") or ""),
+                "owner": str(info.get("kCGWindowOwnerName") or ""),
+                "id": int(info.get("kCGWindowNumber") or 0),
+            }
+        )
+    return out
+
+
+def _size_close(sw: float, sh: float, vw: float, vh: float) -> bool:
+    return abs(sw - vw) <= max(_SIZE_ABS_TOL, vw * _SIZE_REL_TOL) and abs(sh - vh) <= max(
+        _SIZE_ABS_TOL, vh * _SIZE_REL_TOL
+    )
+
+
+def _best_scale_error(item_w: float, item_h: float, vw: float, vh: float) -> float | None:
+    best: float | None = None
+    for scale in _SCALES:
+        sw, sh = item_w * scale, item_h * scale
+        if not _size_close(sw, sh, vw, vh):
+            continue
+        err = abs(sw - vw) + abs(sh - vh)
+        if best is None or err < best:
+            best = err
+    return best
+
+
+def match_items(items: list[dict], video_width: float, video_height: float) -> dict | None:
+    """Pick a unique size match. Returns a copy of the winning item, or None."""
+    vw, vh = float(video_width), float(video_height)
+    if vw <= 0 or vh <= 0:
+        return None
+    candidates: list[tuple[float, dict]] = []
+    for item in items:
+        err = _best_scale_error(float(item["width"]), float(item["height"]), vw, vh)
+        if err is None:
+            continue
+        candidates.append((err, item))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda pair: pair[0])
+    best_err, best = candidates[0]
+    if any(err <= best_err + _AMBIGUOUS_ERR for err, _item in candidates[1:]):
+        return None
+    return dict(best)
+
+
+def match_captured_surface(surface: str, video_width: float, video_height: float, surface_id: int | None = None) -> dict | None:
+    """Find an initial size match, then track the same on-screen ID through resizes.
+
+    Returns Quartz (top-left) bounds, or None when there is no unique match.
+    Does not fall back to the main display.
+    """
+    kind = (surface or "window").lower()
+    if kind == "monitor":
+        items = [{"kind": "monitor", **d} for d in list_displays()]
+    else:
+        items = [{"kind": "window", **w} for w in list_windows()]
+    if surface_id is not None:
+        items = [item for item in items if item.get("id") == surface_id]
+    # Once identified, the window ID remains stable across moves and resizes.
+    best = dict(items[0]) if len(items) == 1 and surface_id is not None else match_items(items, video_width, video_height)
+    if not best:
+        return None
+    return {
+        "x": float(best["x"]),
+        "y": float(best["y"]),
+        "width": float(best["width"]),
+        "height": float(best["height"]),
+        "kind": str(best.get("kind") or kind),
+        "name": str(best.get("name") or ""),
+        "owner": str(best.get("owner") or ""),
+        "id": int(best.get("id") or 0),
+    }
+
+
+def _rect_overlaps(a: dict, b: dict) -> bool:
+    return (
+        float(a.get("X", 0)) < float(b.get("X", 0)) + float(b.get("Width", 0))
+        and float(b.get("X", 0)) < float(a.get("X", 0)) + float(a.get("Width", 0))
+        and float(a.get("Y", 0)) < float(b.get("Y", 0)) + float(b.get("Height", 0))
+        and float(b.get("Y", 0)) < float(a.get("Y", 0)) + float(a.get("Height", 0))
+    )
+
+
+def window_control_state(window_id: int) -> tuple[str, dict | None]:
+    """Return one pause reason for the whole shared window, using front-to-back order."""
+    options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements
+    windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) or []
+    target_index = next((i for i, w in enumerate(windows) if int(w.get("kCGWindowNumber") or 0) == window_id), None)
+    if target_index is None:
+        return ("window_unavailable", None)
+    target = windows[target_index]
+    bounds = target.get("kCGWindowBounds") or {}
+    if (int(target.get("kCGWindowLayer", 0)) != 0 or float(target.get("kCGWindowAlpha", 1)) < 0.5
+            or float(bounds.get("Width", 0)) <= 0 or float(bounds.get("Height", 0)) <= 0):
+        return ("window_unavailable", None)
+    for window in windows[:target_index]:
+        if float(window.get("kCGWindowAlpha", 1)) < 0.5:
+            continue
+        if int(window.get("kCGWindowLayer", 0)) == 0:
+            return ("window_not_frontmost", bounds)
+        if _rect_overlaps(bounds, window.get("kCGWindowBounds") or {}):
+            return ("window_obscured", bounds)
+    return ("ready", bounds)
+
+
+def window_point(window_id: int, nx: float, ny: float) -> tuple[float, float] | None:
+    """Resolve a point only while the entire shared window is controllable."""
+    if not (0 <= nx <= 1 and 0 <= ny <= 1):
+        return None
+    state, bounds = window_control_state(window_id)
+    if state != "ready" or bounds is None:
+        return None
+    return (
+        float(bounds.get("X", 0)) + nx * float(bounds.get("Width", 0)),
+        float(bounds.get("Y", 0)) + ny * float(bounds.get("Height", 0)),
+    )
+
+
+def window_is_frontmost(window_id: int) -> bool:
+    return window_control_state(window_id)[0] == "ready"
 
 
 def current_position() -> tuple[float, float]:
@@ -165,6 +343,15 @@ def up(x: float, y: float, button: str = "left") -> None:
     _down, up_type, _drag, mouse_button = _BUTTON_MAP[button]
     move_interpolated(x, y, drag_button=button)
     time.sleep(0.01)
+    _post_button(up_type, x, y, mouse_button)
+
+
+def release_button(button: str) -> None:
+    """End a held drag without moving the pointer to an obscured target."""
+    if button not in _BUTTON_MAP:
+        raise ValueError(f"unsupported button: {button}")
+    _down, up_type, _drag, mouse_button = _BUTTON_MAP[button]
+    x, y = current_position()
     _post_button(up_type, x, y, mouse_button)
 
 

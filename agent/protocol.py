@@ -61,6 +61,15 @@ class ScreenInfo:
 
 
 @dataclass(frozen=True)
+class SurfaceMatch:
+    type: str = "surface.match"
+    surface: str = "window"
+    width: float = 0.0
+    height: float = 0.0
+    id: int | None = None
+
+
+@dataclass(frozen=True)
 class KeyDown:
     type: str = "key.down"
     code: str = ""
@@ -92,6 +101,7 @@ Command = (
     | KeyReleaseAll
     | Ping
     | ScreenInfo
+    | SurfaceMatch
 )
 
 _ALLOWED_MODIFIERS = frozenset({"shift", "ctrl", "alt", "meta"})
@@ -174,6 +184,17 @@ def parse_message(data: Any) -> Command:
 
     if msg_type == "screen.info":
         return ScreenInfo()
+
+    if msg_type == "surface.match":
+        surface = data.get("surface") or "window"
+        if not isinstance(surface, str) or surface not in {"window", "monitor", "browser", ""}:
+            raise ProtocolError("surface must be window, monitor, or browser")
+        return SurfaceMatch(
+            surface=surface or "window",
+            width=_require_number(data, "width"),
+            height=_require_number(data, "height"),
+            id=_optional_int(data, "id") if "id" in data else None,
+        )
 
     if msg_type == "mouse.move":
         return MouseMove(x=_require_number(data, "x"), y=_require_number(data, "y"))
