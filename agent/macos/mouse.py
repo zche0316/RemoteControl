@@ -110,11 +110,11 @@ def list_displays() -> list[dict[str, float | int]]:
     return out
 
 
-def list_windows() -> list[dict[str, float | str]]:
+def list_windows() -> list[dict[str, float | str | int]]:
     """On-screen layer-0 windows. kCGWindowBounds is already Quartz top-left."""
     options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements
     raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) or []
-    out: list[dict[str, float | str]] = []
+    out: list[dict[str, float | str | int]] = []
     for info in raw:
         try:
             layer = int(info.get("kCGWindowLayer", 1))
@@ -136,6 +136,7 @@ def list_windows() -> list[dict[str, float | str]]:
                 "height": height,
                 "name": str(info.get("kCGWindowName") or ""),
                 "owner": str(info.get("kCGWindowOwnerName") or ""),
+                "owner_pid": int(info.get("kCGWindowOwnerPID") or 0),
                 "id": int(info.get("kCGWindowNumber") or 0),
             }
         )
@@ -226,6 +227,7 @@ def window_control_state(window_id: int) -> tuple[str, dict | None]:
     if target_index is None:
         return ("window_unavailable", None)
     target = windows[target_index]
+    target_pid = int(target.get("kCGWindowOwnerPID") or 0)
     bounds = target.get("kCGWindowBounds") or {}
     if (int(target.get("kCGWindowLayer", 0)) != 0 or float(target.get("kCGWindowAlpha", 1)) < 0.5
             or float(bounds.get("Width", 0)) <= 0 or float(bounds.get("Height", 0)) <= 0):
@@ -235,6 +237,11 @@ def window_control_state(window_id: int) -> tuple[str, dict | None]:
         # and some report desktop-sized bounds. They do not represent a shared
         # application window being covered.
         if int(window.get("kCGWindowLayer", 0)) != 0 or float(window.get("kCGWindowAlpha", 1)) < 0.5:
+            continue
+        # Apps can expose title bars and accessibility helpers as separate
+        # layer-0 windows. They are part of the shared app, not another app
+        # intercepting remote control.
+        if target_pid and int(window.get("kCGWindowOwnerPID") or 0) == target_pid:
             continue
         if _rect_overlaps(bounds, window.get("kCGWindowBounds") or {}):
             return ("window_obscured", bounds)

@@ -4,11 +4,12 @@ from unittest.mock import patch
 from agent.macos import mouse
 
 
-def window(window_id, x, y, width, height):
+def window(window_id, x, y, width, height, pid=100):
     return {
         "kCGWindowNumber": window_id,
         "kCGWindowLayer": 0,
         "kCGWindowAlpha": 1,
+        "kCGWindowOwnerPID": pid,
         "kCGWindowBounds": {"X": x, "Y": y, "Width": width, "Height": height},
     }
 
@@ -23,7 +24,7 @@ class WindowSurfaceTests(unittest.TestCase):
 
     def test_only_an_overlapping_front_window_pauses_the_shared_window(self):
         target = window(42, 0, 0, 400, 400)
-        cover = window(43, 0, 0, 200, 400)
+        cover = window(43, 0, 0, 200, 400, pid=200)
         with patch.object(mouse, "CGWindowListCopyWindowInfo", return_value=[cover, target]):
             self.assertIsNone(mouse.window_point(42, 0.25, 0.5))
             self.assertIsNone(mouse.window_point(42, 0.75, 0.5))
@@ -36,16 +37,22 @@ class WindowSurfaceTests(unittest.TestCase):
 
     def test_front_window_elsewhere_does_not_pause_pointer_control(self):
         target = window(42, 0, 0, 400, 400)
-        elsewhere = window(43, 500, 0, 300, 300)
+        elsewhere = window(43, 500, 0, 300, 300, pid=200)
         with patch.object(mouse, "CGWindowListCopyWindowInfo", return_value=[elsewhere, target]):
             self.assertEqual(mouse.window_control_state(42)[0], "ready")
             self.assertEqual(mouse.window_point(42, 0.5, 0.5), (200, 200))
 
     def test_system_layer_does_not_pause_the_shared_window(self):
         target = window(42, 0, 0, 400, 400)
-        cover = window(43, 0, 0, 200, 200)
+        cover = window(43, 0, 0, 200, 200, pid=200)
         cover["kCGWindowLayer"] = 3
         with patch.object(mouse, "CGWindowListCopyWindowInfo", return_value=[cover, target]):
+            self.assertEqual(mouse.window_control_state(42)[0], "ready")
+
+    def test_same_app_helper_window_does_not_pause_the_shared_window(self):
+        target = window(42, 0, 0, 400, 400, pid=100)
+        helper = window(43, 10, 10, 66, 20, pid=100)
+        with patch.object(mouse, "CGWindowListCopyWindowInfo", return_value=[helper, target]):
             self.assertEqual(mouse.window_control_state(42)[0], "ready")
 
 
