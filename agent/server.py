@@ -42,6 +42,7 @@ _PAUSE_MESSAGES = {
     "window_unavailable": "Shared window is unavailable. Restore it to resume control.",
     "window_not_frontmost": "Remote control paused. Bring the shared window to the front to resume.",
     "window_obscured": "Remote control paused. Move the covering window away to resume.",
+    "window_focus_unavailable": "Keyboard control paused. Allow Accessibility access for RemoteAgent to resume.",
     "surface_unmatched": "Remote control paused. The shared window could not be identified.",
 }
 
@@ -64,11 +65,13 @@ class MovePump:
         self._target: tuple[float, float] | None = None
         self._current: tuple[float, float] | None = None
         self._held_button: str | None = None
+        self._window_id: int | None = None
         self._task: asyncio.Task[None] | None = None
 
-    def set_target(self, x: float, y: float) -> None:
+    def set_target(self, x: float, y: float, window_id: int | None = None) -> None:
         with self._lock:
             self._target = (float(x), float(y))
+            self._window_id = window_id
 
     def set_held_button(self, button: str | None) -> None:
         with self._lock:
@@ -103,16 +106,23 @@ class MovePump:
                 target = self._target
                 current = self._current
                 held = self._held_button
+                window_id = self._window_id
                 self._target = None
             if target is None:
                 continue
             try:
-                self._current = mouse.move_interpolated(
-                    target[0],
-                    target[1],
-                    origin=current,
-                    drag_button=held,
-                )
+                if window_id is not None and held is None:
+                    # A free cursor can enter the window from anywhere; only
+                    # the destination must be safe. Drag steps remain guarded.
+                    mouse.move(target[0], target[1], window_id=window_id)
+                    self._current = target
+                else:
+                    self._current = mouse.move_interpolated(
+                        target[0], target[1], origin=current,
+                        drag_button=held, window_id=window_id,
+                    )
+            except mouse.WindowHitMismatch:
+                self.release_held()
             except Exception:
                 logger.exception("move pump failed")
 
@@ -129,7 +139,9 @@ def _pause_active_input() -> None:
     keyboard.release_all()
 
 
-def dispatch(command: Any) -> dict[str, Any] | None:
+def dispatch(command: Any, window_id: int | None = None,
+             match_point: tuple[float, float] = (0.5, 0.5),
+             check_keyboard_focus: bool = False) -> dict[str, Any] | None:
     if isinstance(command, Ping):
         return ok_response("ping")
 
@@ -141,7 +153,10 @@ def dispatch(command: Any) -> dict[str, Any] | None:
         if not matched:
             reason = "window_unavailable" if command.id is not None else "surface_unmatched"
             return _pause_response(reason, "surface.match")
-        reason = mouse.window_control_state(matched["id"])[0] if matched["kind"] == "window" else "ready"
+        reason = (mouse.window_control_state(matched["id"], *match_point)[0]
+                  if matched["kind"] == "window" else "ready")
+        if reason == "ready" and check_keyboard_focus and matched["kind"] == "window":
+            reason = mouse.window_keyboard_focus_state(matched["id"], *match_point)
         return ok_response(
             "surface.match", guardedInput=True,
             controlAllowed=reason == "ready",
@@ -151,19 +166,19 @@ def dispatch(command: Any) -> dict[str, Any] | None:
         )
 
     if isinstance(command, MouseMove):
-        _move_pump.set_target(command.x, command.y)
+        _move_pump.set_target(command.x, command.y, window_id)
         return None
 
     if isinstance(command, MouseDown):
         _move_pump.cancel_pending()
-        mouse.down(command.x, command.y, button=command.button)
+        mouse.down(command.x, command.y, button=command.button, window_id=window_id)
         _move_pump.note_position(command.x, command.y)
         _move_pump.set_held_button(command.button)
         return ok_response("mouse.down")
 
     if isinstance(command, MouseUp):
         _move_pump.cancel_pending()
-        mouse.up(command.x, command.y, button=command.button)
+        mouse.up(command.x, command.y, button=command.button, window_id=window_id)
         _move_pump.note_position(command.x, command.y)
         _move_pump.set_held_button(None)
         return ok_response("mouse.up")
@@ -171,13 +186,13 @@ def dispatch(command: Any) -> dict[str, Any] | None:
     if isinstance(command, MouseClick):
         _move_pump.cancel_pending()
         _move_pump.set_held_button(None)
-        mouse.click(command.x, command.y, button=command.button)
+        mouse.click(command.x, command.y, button=command.button, window_id=window_id)
         _move_pump.note_position(command.x, command.y)
         return ok_response("mouse.click")
 
     if isinstance(command, MouseScroll):
         _move_pump.cancel_pending()
-        mouse.scroll(command.x, command.y, dx=command.dx, dy=command.dy)
+        mouse.scroll(command.x, command.y, dx=command.dx, dy=command.dy, window_id=window_id)
         _move_pump.note_position(command.x, command.y)
         return ok_response("mouse.scroll")
 
@@ -201,6 +216,8 @@ async def handle_client(websocket: ServerConnection) -> None:
     logger.info("client connected: %s", peer)
     _move_pump.start()
     matched_surface: dict[str, Any] | None = None
+    last_window_point = (0.5, 0.5)
+    check_keyboard_focus = False
     try:
         await websocket.send(json.dumps(screen_info_response()))
         async for raw in websocket:
@@ -216,19 +233,37 @@ async def handle_client(websocket: ServerConnection) -> None:
                     if not matched_surface or data.get("surfaceId") != matched_surface["id"]:
                         raise ProtocolError("captured surface is not matched")
                     if matched_surface["kind"] == "window":
-                        reason, bounds = mouse.window_control_state(matched_surface["id"])
-                        if reason != "ready" or bounds is None:
-                            raise WindowControlPaused(reason)
+                        requested_point = last_window_point
                         if msg_type.startswith("mouse."):
+                            check_keyboard_focus = False
                             nx, ny = data.get("nx"), data.get("ny")
                             if (isinstance(nx, bool) or isinstance(ny, bool)
                                     or not isinstance(nx, (int, float)) or not isinstance(ny, (int, float))
                                     or not (0 <= nx <= 1 and 0 <= ny <= 1)):
                                 raise ProtocolError("missing window-relative position")
+                            requested_point = (float(nx), float(ny))
+                        reason, bounds = mouse.window_control_state(matched_surface["id"], *requested_point)
+                        if reason != "ready" or bounds is None:
+                            raise WindowControlPaused(reason)
+                        last_window_point = requested_point
+                        if msg_type.startswith("key."):
+                            check_keyboard_focus = True
+                            reason = mouse.window_keyboard_focus_state(matched_surface["id"], *last_window_point)
+                            if reason != "ready":
+                                raise WindowControlPaused(reason)
+                        if msg_type.startswith("mouse."):
                             data["x"] = float(bounds["X"]) + float(nx) * float(bounds["Width"])
                             data["y"] = float(bounds["Y"]) + float(ny) * float(bounds["Height"])
                 command = parse_message(data)
-                response = dispatch(command)
+                if isinstance(command, SurfaceMatch) and (
+                    matched_surface is None or command.id != matched_surface["id"]
+                ):
+                    last_window_point = (0.5, 0.5)
+                    check_keyboard_focus = False
+                window_id = (matched_surface["id"] if matched_surface and matched_surface["kind"] == "window"
+                             and not isinstance(command, SurfaceMatch) else None)
+                response = dispatch(command, window_id=window_id, match_point=last_window_point,
+                                    check_keyboard_focus=check_keyboard_focus)
                 if isinstance(command, SurfaceMatch):
                     matched_surface = response if response and response.get("ok") else None
                     if not response.get("controlAllowed", False):
@@ -236,6 +271,9 @@ async def handle_client(websocket: ServerConnection) -> None:
             except WindowControlPaused as exc:
                 _pause_active_input()
                 response = _pause_response(exc.reason, msg_type)
+            except mouse.WindowHitMismatch:
+                _pause_active_input()
+                response = _pause_response("window_obscured", msg_type)
             except ProtocolError as exc:
                 _pause_active_input()
                 msg_type = data.get("type") if isinstance(data, dict) else None
