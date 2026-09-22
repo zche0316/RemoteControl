@@ -238,12 +238,16 @@ def window_control_state(window_id: int) -> tuple[str, dict | None]:
         # application window being covered.
         if int(window.get("kCGWindowLayer", 0)) != 0 or float(window.get("kCGWindowAlpha", 1)) < 0.5:
             continue
-        # Apps can expose title bars and accessibility helpers as separate
-        # layer-0 windows. They are part of the shared app, not another app
-        # intercepting remote control.
-        if target_pid and int(window.get("kCGWindowOwnerPID") or 0) == target_pid:
+        # Some apps expose tiny title-bar/accessibility helpers as separate
+        # layer-0 windows. A normal-sized window from the same app can still
+        # cover the shared window and receive a remote click.
+        other_bounds = window.get("kCGWindowBounds") or {}
+        is_small_helper = (float(other_bounds.get("Width", 0)) < 64
+                           or float(other_bounds.get("Height", 0)) < 48)
+        if (is_small_helper and target_pid
+                and int(window.get("kCGWindowOwnerPID") or 0) == target_pid):
             continue
-        if _rect_overlaps(bounds, window.get("kCGWindowBounds") or {}):
+        if _rect_overlaps(bounds, other_bounds):
             return ("window_obscured", bounds)
     return ("ready", bounds)
 

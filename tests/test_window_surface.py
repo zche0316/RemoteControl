@@ -55,6 +55,13 @@ class WindowSurfaceTests(unittest.TestCase):
         with patch.object(mouse, "CGWindowListCopyWindowInfo", return_value=[helper, target]):
             self.assertEqual(mouse.window_control_state(42)[0], "ready")
 
+    def test_same_app_normal_window_cover_pauses_the_shared_window(self):
+        target = window(42, 0, 0, 400, 400, pid=100)
+        cover = window(43, 20, 20, 300, 300, pid=100)
+        with patch.object(mouse, "CGWindowListCopyWindowInfo", return_value=[cover, target]):
+            self.assertEqual(mouse.window_control_state(42)[0], "window_obscured")
+            self.assertIsNone(mouse.window_point(42, 0.5, 0.5))
+
 
 if __name__ == "__main__":
     unittest.main()
