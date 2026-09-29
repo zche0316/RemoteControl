@@ -16,6 +16,11 @@ def window(window_id, x, y, width, height, pid=100):
 
 
 class WindowSurfaceTests(unittest.TestCase):
+    def test_normalized_edges_are_kept_inside_window_bounds(self):
+        bounds = {"X": 10, "Y": 20, "Width": 400, "Height": 300}
+        self.assertEqual(mouse.window_relative_point(bounds, 0, 0), (10.5, 20.5))
+        self.assertEqual(mouse.window_relative_point(bounds, 1, 1), (409.5, 319.5))
+
     def test_known_window_survives_resize_without_matching_old_video_size(self):
         resized = {"id": 42, "x": 80, "y": 40, "width": 600, "height": 400}
         with patch.object(mouse, "list_windows", return_value=[resized]):
@@ -107,6 +112,43 @@ if __name__ == "__main__":
     unittest.main()
 
 class AgentInjectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_move_pump_publishes_pause_when_target_becomes_covered(self):
+        import asyncio
+        from agent import server
+
+        pauses = []
+
+        async def blocked(reason):
+            pauses.append(reason)
+
+        pump = server.MovePump()
+        pump.set_blocked_handler(blocked)
+        with (patch.object(server, "_MOVE_HZ", 1000),
+              patch.object(server.mouse, "move", side_effect=mouse.WindowHitMismatch(42))):
+            pump.start()
+            pump.set_target(100, 100, 42)
+            await asyncio.sleep(0.01)
+            pump._task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await pump._task
+
+        self.assertEqual(pauses, ["window_obscured"])
+
+    async def test_old_connection_cannot_clear_new_move_pause_handler(self):
+        from agent import server
+
+        async def old_handler(_reason):
+            pass
+
+        async def new_handler(_reason):
+            pass
+
+        pump = server.MovePump()
+        pump.set_blocked_handler(old_handler)
+        pump.set_blocked_handler(new_handler)
+        pump.clear_blocked_handler(old_handler)
+        self.assertIs(pump._blocked_handler, new_handler)
+
     async def test_covered_window_rejects_click_before_os_injection(self):
         import json
         from agent import server

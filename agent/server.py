@@ -9,7 +9,7 @@ import logging
 import sys
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from websockets.asyncio.server import ServerConnection, serve
 
@@ -67,6 +67,7 @@ class MovePump:
         self._held_button: str | None = None
         self._window_id: int | None = None
         self._task: asyncio.Task[None] | None = None
+        self._blocked_handler: Callable[[str], Awaitable[None]] | None = None
 
     def set_target(self, x: float, y: float, window_id: int | None = None) -> None:
         with self._lock:
@@ -76,6 +77,13 @@ class MovePump:
     def set_held_button(self, button: str | None) -> None:
         with self._lock:
             self._held_button = button
+
+    def set_blocked_handler(self, handler: Callable[[str], Awaitable[None]] | None) -> None:
+        self._blocked_handler = handler
+
+    def clear_blocked_handler(self, handler: Callable[[str], Awaitable[None]]) -> None:
+        if self._blocked_handler is handler:
+            self._blocked_handler = None
 
     def note_position(self, x: float, y: float) -> None:
         with self._lock:
@@ -123,6 +131,12 @@ class MovePump:
                     )
             except mouse.WindowHitMismatch:
                 self.release_held()
+                handler = self._blocked_handler
+                if handler is not None:
+                    try:
+                        await handler("window_obscured")
+                    except Exception:
+                        logger.exception("failed to publish move pause")
             except Exception:
                 logger.exception("move pump failed")
 
@@ -186,7 +200,8 @@ def dispatch(command: Any, window_id: int | None = None,
     if isinstance(command, MouseClick):
         _move_pump.cancel_pending()
         _move_pump.set_held_button(None)
-        mouse.click(command.x, command.y, button=command.button, window_id=window_id)
+        mouse.click(command.x, command.y, button=command.button,
+                    window_id=window_id, clicks=command.clicks)
         _move_pump.note_position(command.x, command.y)
         return ok_response("mouse.click")
 
@@ -218,6 +233,12 @@ async def handle_client(websocket: ServerConnection) -> None:
     matched_surface: dict[str, Any] | None = None
     last_window_point = (0.5, 0.5)
     check_keyboard_focus = False
+
+    async def publish_move_pause(reason: str) -> None:
+        keyboard.release_all()
+        await websocket.send(json.dumps(_pause_response(reason, "mouse.move")))
+
+    _move_pump.set_blocked_handler(publish_move_pause)
     try:
         await websocket.send(json.dumps(screen_info_response()))
         async for raw in websocket:
@@ -242,18 +263,21 @@ async def handle_client(websocket: ServerConnection) -> None:
                                     or not (0 <= nx <= 1 and 0 <= ny <= 1)):
                                 raise ProtocolError("missing window-relative position")
                             requested_point = (float(nx), float(ny))
+                        # Keep checking the point the controller most recently
+                        # requested, even when it is currently covered. The
+                        # periodic surface.match must not resume from an older,
+                        # safe point while this point is still blocked.
+                        last_window_point = requested_point
                         reason, bounds = mouse.window_control_state(matched_surface["id"], *requested_point)
                         if reason != "ready" or bounds is None:
                             raise WindowControlPaused(reason)
-                        last_window_point = requested_point
                         if msg_type.startswith("key."):
                             check_keyboard_focus = True
                             reason = mouse.window_keyboard_focus_state(matched_surface["id"], *last_window_point)
                             if reason != "ready":
                                 raise WindowControlPaused(reason)
                         if msg_type.startswith("mouse."):
-                            data["x"] = float(bounds["X"]) + float(nx) * float(bounds["Width"])
-                            data["y"] = float(bounds["Y"]) + float(ny) * float(bounds["Height"])
+                            data["x"], data["y"] = mouse.window_relative_point(bounds, float(nx), float(ny))
                 command = parse_message(data)
                 if isinstance(command, SurfaceMatch) and (
                     matched_surface is None or command.id != matched_surface["id"]
@@ -289,6 +313,7 @@ async def handle_client(websocket: ServerConnection) -> None:
             if response is not None:
                 await websocket.send(json.dumps(response))
     finally:
+        _move_pump.clear_blocked_handler(publish_move_pause)
         _move_pump.release_held()
         released = keyboard.release_all()
         if released:

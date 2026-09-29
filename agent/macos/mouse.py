@@ -224,6 +224,23 @@ class WindowHitMismatch(Exception):
     """The shared window would not receive an event at the requested point."""
 
 
+def window_relative_point(bounds: dict, nx: float, ny: float) -> tuple[float, float]:
+    """Map a normalized point to the interior of a Quartz window rectangle."""
+    x = float(bounds.get("X", 0))
+    y = float(bounds.get("Y", 0))
+    width = float(bounds.get("Width", 0))
+    height = float(bounds.get("Height", 0))
+
+    # Quartz rectangles are half-open on their right and bottom edges. Keep
+    # normalized edge coordinates inside the target window so nx/ny == 1 does
+    # not hit the desktop or an adjacent window.
+    inset_x = min(0.5, width / 2)
+    inset_y = min(0.5, height / 2)
+    px = min(max(float(nx) * width, inset_x), max(inset_x, width - inset_x))
+    py = min(max(float(ny) * height, inset_y), max(inset_y, height - inset_y))
+    return (x + px, y + py)
+
+
 def window_hit_at(x: float, y: float) -> int:
     """Ask WindowServer which window would receive a mouse-down here.
 
@@ -256,8 +273,7 @@ def window_control_state(window_id: int, nx: float = 0.5, ny: float = 0.5) -> tu
     if (int(target.get("kCGWindowLayer", 0)) != 0 or float(target.get("kCGWindowAlpha", 1)) < 0.5
             or float(bounds.get("Width", 0)) <= 0 or float(bounds.get("Height", 0)) <= 0):
         return ("window_unavailable", None)
-    x = float(bounds["X"]) + nx * float(bounds["Width"])
-    y = float(bounds["Y"]) + ny * float(bounds["Height"])
+    x, y = window_relative_point(bounds, nx, ny)
     if window_hit_at(x, y) != window_id:
         return ("window_obscured", bounds)
     return ("ready", bounds)
@@ -277,8 +293,7 @@ def window_keyboard_focus_state(window_id: int, nx: float, ny: float) -> str:
         if not pid or front_app is None or int(front_app.processIdentifier()) != pid:
             return "window_not_frontmost"
 
-        x = float(bounds["X"]) + nx * float(bounds["Width"])
-        y = float(bounds["Y"]) + ny * float(bounds["Height"])
+        x, y = window_relative_point(bounds, nx, ny)
         err, element = AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), x, y, None)
         if err or element is None:
             return "window_focus_unavailable"
@@ -301,10 +316,7 @@ def window_point(window_id: int, nx: float, ny: float) -> tuple[float, float] | 
     state, bounds = window_control_state(window_id, nx, ny)
     if state != "ready" or bounds is None:
         return None
-    return (
-        float(bounds.get("X", 0)) + nx * float(bounds.get("Width", 0)),
-        float(bounds.get("Y", 0)) + ny * float(bounds.get("Height", 0)),
-    )
+    return window_relative_point(bounds, nx, ny)
 
 
 def window_is_frontmost(window_id: int) -> bool:
@@ -420,7 +432,7 @@ def release_button(button: str) -> None:
 
 
 def click(x: float, y: float, button: str = "left", pause_s: float = 0.01,
-          window_id: int | None = None) -> None:
+          window_id: int | None = None, clicks: int = 1) -> None:
     """Move to (x, y) and perform a button down/up click."""
     if button not in _BUTTON_MAP:
         raise ValueError(f"unsupported button: {button}")
@@ -431,7 +443,7 @@ def click(x: float, y: float, button: str = "left", pause_s: float = 0.01,
     time.sleep(pause_s)
     if window_id is not None:
         require_window_hit(window_id, x, y)
-    _post_button(down_type, x, y, mouse_button)
+    _post_button(down_type, x, y, mouse_button, click_state=clicks)
     try:
         time.sleep(pause_s)
         if window_id is not None:
@@ -439,7 +451,7 @@ def click(x: float, y: float, button: str = "left", pause_s: float = 0.01,
     except BaseException:
         release_button(button)
         raise
-    _post_button(up_type, x, y, mouse_button)
+    _post_button(up_type, x, y, mouse_button, click_state=clicks)
 
 
 def scroll(x: float, y: float, dx: int = 0, dy: int = 0,

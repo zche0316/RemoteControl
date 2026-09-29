@@ -23,6 +23,7 @@ class MouseClick:
     x: float = 0.0
     y: float = 0.0
     button: str = "left"
+    clicks: int = 1
 
 
 @dataclass(frozen=True)
@@ -171,6 +172,13 @@ def _require_button(data: dict[str, Any]) -> str:
     return button
 
 
+def _optional_clicks(data: dict[str, Any]) -> int:
+    value = data.get("clicks", 1)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > 3:
+        raise ProtocolError("clicks must be an integer from 1 to 3")
+    return value
+
+
 def parse_message(data: Any) -> Command:
     if not isinstance(data, dict):
         raise ProtocolError("message must be a JSON object")
@@ -204,6 +212,7 @@ def parse_message(data: Any) -> Command:
             x=_require_number(data, "x"),
             y=_require_number(data, "y"),
             button=_require_button(data),
+            clicks=_optional_clicks(data),
         )
 
     if msg_type == "mouse.down":
