@@ -1,9 +1,9 @@
 {
   "name": "Remote Control Test",
   "title": "Remote Control Test",
-  "subtitle": "Host pad mouse control to participant agent",
-  "version": "1.2.0",
-  "description": "Squidly miniapp test surface: hovering the pad publishes mouse.move; click, drag, and scroll are separate events. The participant machine injects them through the local RemoteAgent. Screen share belongs in Squidly session, not this app.",
+  "subtitle": "Host pad mouse and keyboard to participant agent",
+  "version": "1.3.0",
+  "description": "Squidly miniapp test surface: the pad publishes mouse.move / click / drag / scroll; Grab keyboard publishes key.down / key.up. The participant machine injects them through the local RemoteAgent.",
   "author": "Joshua Aarons",
   "icon": "dress-the-monster-logo.png"
 }

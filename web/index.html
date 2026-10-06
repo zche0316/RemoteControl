@@ -10,8 +10,10 @@
   <p class="sub">
     Control-protocol test surface (no screen share). Moving on the pad is hover
     (<code>mouse.move</code>); press is click or drag; wheel is scroll.
-    In local Live mode, click the pad to grab the keyboard (<code>key.down</code> / <code>key.up</code>).
-    In Squidly, <strong>host</strong> publishes mouse events; <strong>participant</strong> injects them via the local RemoteAgent.
+    Click the pad to place the remote cursor (and click into a field), then
+    <strong>Grab keyboard</strong> and type — same order as using your own machine.
+    In Squidly, <strong>host</strong> publishes mouse on <code>move</code> and keys on <code>key</code>;
+    <strong>participant</strong> injects them via the local RemoteAgent.
   </p>
 
   <div class="row">
@@ -49,8 +51,9 @@
       <span id="padHint">Record: move, click, drag, and scroll on the pad. Nothing is sent until Replay.</span>
       <span class="padMetaRight">
         <span id="padKeys" hidden>keys</span>
+        <button id="grabKeysBtn" type="button" class="secondary" disabled>Grab keyboard</button>
         <span id="padCoords">—</span>
-        <button id="padFsBtn" type="button" class="secondary">Fullscreen</button>
+        <button id="padFsBtn" type="button" class="secondary" title="Fullscreen">Fullscreen</button>
       </span>
     </div>
     <div id="padWrap">

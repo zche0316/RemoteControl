@@ -81,10 +81,12 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   overflow: hidden;
   touch-action: none;
 }
+
 #padStage:fullscreen,
-#padStage:-webkit-full-screen {
-  background: var(--bg);
-  padding: 0.75rem 1rem 1rem;
+#padStage:-webkit-full-screen,
+#padStage.expanded {
+  background: #000;
+  padding: 0;
   width: 100%;
   height: 100%;
   max-width: none;
@@ -92,9 +94,62 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   flex-direction: column;
   box-sizing: border-box;
 }
+#padStage.expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
 #padStage:fullscreen #padMeta,
-#padStage:-webkit-full-screen #padMeta {
-  margin-bottom: 0.6rem;
+#padStage:-webkit-full-screen #padMeta,
+#padStage.expanded #padMeta {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
+  margin: 0;
+  padding: 0;
+  width: auto;
+  gap: 0;
+  pointer-events: none;
+}
+#padStage:fullscreen #padHint,
+#padStage:-webkit-full-screen #padHint,
+#padStage.expanded #padHint,
+#padStage:fullscreen #padKeys,
+#padStage:-webkit-full-screen #padKeys,
+#padStage.expanded #padKeys,
+#padStage:fullscreen #padCoords,
+#padStage:-webkit-full-screen #padCoords,
+#padStage.expanded #padCoords,
+#padStage:fullscreen #grabKeysBtn,
+#padStage:-webkit-full-screen #grabKeysBtn,
+#padStage.expanded #grabKeysBtn {
+  display: none !important;
+}
+#padStage:fullscreen .padMetaRight,
+#padStage:-webkit-full-screen .padMetaRight,
+#padStage.expanded .padMetaRight {
+  gap: 0;
+}
+#padStage:fullscreen #padFsBtn,
+#padStage:-webkit-full-screen #padFsBtn,
+#padStage.expanded #padFsBtn {
+  pointer-events: auto;
+  padding: 1px 5px;
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 400;
+  letter-spacing: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: rgba(255, 255, 255, 0.35);
+}
+#padStage:fullscreen #padFsBtn:hover,
+#padStage:-webkit-full-screen #padFsBtn:hover,
+#padStage.expanded #padFsBtn:hover {
+  color: rgba(255, 255, 255, 0.85);
+  background: transparent;
 }
 #padStage:fullscreen #padWrap,
 #padStage:-webkit-full-screen #padWrap,
@@ -106,8 +161,20 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   aspect-ratio: unset;
   display: grid;
   place-items: center;
-  background: #0a0c10;
+  background: #000;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
   container-type: size;
+}
+#padStage:fullscreen #padWrap.active,
+#padStage:-webkit-full-screen #padWrap.active,
+#padStage.expanded #padWrap.active,
+#padStage:fullscreen #padWrap.keys-grabbed,
+#padStage:-webkit-full-screen #padWrap.keys-grabbed,
+#padStage.expanded #padWrap.keys-grabbed {
+  border: none;
+  box-shadow: none;
 }
 #padStage:fullscreen #pad,
 #padStage:-webkit-full-screen #pad,
@@ -117,22 +184,6 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   height: min(100cqh, calc(100cqw / var(--pad-ar-num, 1.6)));
   max-width: 100%;
   max-height: 100%;
-}
-#padStage.expanded {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  background: var(--bg);
-  padding: 0.75rem 1rem 1rem;
-  max-width: none;
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
-}
-#padStage.expanded #padMeta {
-  margin-bottom: 0.6rem;
 }
 body.pad-expanded {
   overflow: hidden;

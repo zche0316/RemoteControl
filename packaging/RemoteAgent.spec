@@ -5,9 +5,12 @@ Run from the repo root:
     pyinstaller packaging/RemoteAgent.spec
 """
 
+import os
 from pathlib import Path
 
 root = Path(SPECPATH).resolve().parent
+version = os.environ.get("REMOTE_AGENT_VERSION", "0.0.0-dev")
+build_number = os.environ.get("REMOTE_AGENT_BUILD", "0")
 
 a = Analysis(
     [str(root / "agent" / "__main__.py")],
@@ -20,6 +23,7 @@ a = Analysis(
         "agent.protocol",
         "agent.macos",
         "agent.macos.mouse",
+        "agent.macos.keyboard",
         "agent.macos.statusbar",
         "agent.macos.statusicon",
         "objc",
@@ -57,7 +61,7 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
-    codesign_identity=None,
+    codesign_identity="Developer ID Application: Gabriel Ralph (WVLFJFML4Z)",
     entitlements_file=None,
 )
 coll = COLLECT(
@@ -78,6 +82,8 @@ app = BUNDLE(
         "CFBundleName": "RemoteAgent",
         "CFBundleDisplayName": "RemoteAgent",
         "CFBundleIdentifier": "dev.squidly.remotecontrol.agent",
+        "CFBundleShortVersionString": version,
+        "CFBundleVersion": build_number,
         "CFBundlePackageType": "APPL",
         "LSUIElement": True,
         "NSHighResolutionCapable": True,

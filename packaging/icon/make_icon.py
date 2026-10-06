@@ -150,13 +150,13 @@ def squid_svg() -> str:
 
 def main() -> None:
     here = Path(__file__).resolve().parent
-    svg_path = here / "squidly-loader.svg"
+    svg_path = here / "logo.svg"
     icns_path = here / "RemoteAgent.icns"
     magick = shutil.which("magick") or shutil.which("convert")
     if not magick:
         raise SystemExit("need ImageMagick (magick) to rasterize the SVG")
-    svg_path.write_text(squid_svg(), encoding="utf-8")
-    print(f"wrote {svg_path}")
+    # svg_path.write_text(squid_svg(), encoding="utf-8")
+    # print(f"wrote {svg_path}")
 
     with tempfile.TemporaryDirectory() as tmp:
         iconset = Path(tmp) / "RemoteAgent.iconset"

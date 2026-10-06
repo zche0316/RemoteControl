@@ -1,6 +1,7 @@
 const $ = (id) => document.getElementById(id);
 
 const FIREBASE_MOVE_KEY = "move";
+const FIREBASE_KEY_KEY = "key";
 const FIREBASE_BUTTON_KEY = "button";
 const FIREBASE_CLICK_KEY = "click";
 const FIREBASE_SCROLL_KEY = "scroll";
@@ -52,7 +53,7 @@ let pressButton = "left";
 let sentButtonDown = false;
 let hostMoveSetLog = 0;
 let recvMoveLog = 0;
-let keyEventLog = 0;
+let keysArmed = false;
 const heldKeys = new Set();
 const fbPrimed = new Set();
 
@@ -119,20 +120,21 @@ function setConnected(on) {
   $("moveBtn").disabled = !on || role === "host";
   const typeBtn = $("typeTestBtn");
   if (typeBtn) typeBtn.disabled = !on || role !== "local";
+  updateGrabButton();
   updateReplayButtons();
 }
 
 function hostHint() {
-  return "Host: move on the pad to move the participant cursor (no button held). Click, drag, right/middle click, and scroll are separate events.";
+  return "Host: pad moves the participant cursor. Click, drag, and scroll are separate events. Click the pad or Grab keyboard, then type (after clicking the field with the pad).";
 }
 
 function participantHint() {
-  return "Participant: pad is a preview. Connects to the local agent and injects host hover/click/scroll/drag. This Mac's cursor is controlled.";
+  return "Participant: pad is a preview. Connects to the local agent and injects host hover/click/scroll/drag/keys. This Mac receives the cursor and keyboard.";
 }
 
 function localHint() {
   return padMode() === "live"
-    ? "Live: hover/click/scroll inject immediately. Click the pad to grab keys (same Mac: the browser is usually frontmost, so use Type Hello in 2s to hit TextEdit)."
+    ? "Live: use the pad to move/click/scroll like a real mouse. Click into a field, grab the keyboard, then type. Esc releases grab."
     : "Record: hover, click, drag, and scroll are captured. Nothing is sent until Replay. Keyboard is live-only.";
 }
 
@@ -145,9 +147,8 @@ function applyRole(next) {
     next === "host" || next === "participant" ? next : "local";
   const changed = normalized !== role;
   if (changed) log(`role ${role} → ${normalized}`);
-  if (normalized !== "local") {
-    releaseHeldKeys();
-    setKeysGrabbed(false);
+  if (changed && normalized !== "local") {
+    setKeysArmed(false, { silent: true });
   }
   role = normalized;
   roleEl.textContent = `role: ${role}`;
@@ -409,15 +410,58 @@ function formatTypedPayload(kind, mapped, extra = []) {
   return [nextEventSeq(), kind, mapped.nx.toFixed(4), mapped.ny.toFixed(4), ...extra].join("|");
 }
 
-function parseStreamPayload(value) {
-  const parts = parsePipes(value, 3);
+function formatKeyPayload(action, code, key, modifiers) {
+  if (action === "key.releaseAll") {
+    return `${nextEventSeq()}|kr`;
+  }
+  const kind = action === "key.down" ? "kd" : "ku";
+  const safeCode = String(code || "").replace(/\|/g, "");
+  const safeKey = String(key || "").replace(/\|/g, "");
+  const mods = (modifiers || []).join("+");
+  return [nextEventSeq(), kind, safeCode, safeKey, mods].join("|");
+}
+
+function parseModList(raw) {
+  if (!raw) return [];
+  const allowed = new Set(["shift", "ctrl", "alt", "meta"]);
+  const out = [];
+  for (const part of String(raw).split("+")) {
+    if (allowed.has(part) && !out.includes(part)) out.push(part);
+  }
+  return out;
+}
+
+function parseKeyPayload(value) {
+  const parts = parsePipes(value, 2);
   if (!parts) return null;
+  const kind = parts[1];
+  if (kind === "kr") return { kind: "kr" };
+  if ((kind === "kd" || kind === "ku") && parts.length >= 4) {
+    const code = parts[2];
+    if (!code) return null;
+    return {
+      kind,
+      code,
+      key: parts[3] ?? "",
+      modifiers: parseModList(parts[4] ?? ""),
+    };
+  }
+  return null;
+}
+
+function parseStreamPayload(value) {
+  const parts = parsePipes(value, 2);
+  if (!parts) return null;
+  if (parts.length >= 2 && (parts[1] === "kd" || parts[1] === "ku" || parts[1] === "kr")) {
+    return parseKeyPayload(value);
+  }
   if (parts.length === 3) {
     const nx = Number(parts[1]);
     const ny = Number(parts[2]);
     if (!Number.isFinite(nx) || !Number.isFinite(ny)) return null;
     return { kind: "move", mapped: mappedFromNorm(clamp01(nx), clamp01(ny)) };
   }
+  if (parts.length < 4) return null;
   const kind = parts[1];
   const nx = Number(parts[2]);
   const ny = Number(parts[3]);
@@ -606,13 +650,53 @@ function eventModifiers(ev) {
   return mods;
 }
 
-function keyboardGrabbed() {
-  return injectsLocally() && document.activeElement === canvas;
+function canArmKeys() {
+  if (role === "host") return hasSquidly();
+  if (role === "local") return !!ws && ws.readyState === WebSocket.OPEN;
+  return false;
 }
 
-function setKeysGrabbed(on) {
-  padWrap.classList.toggle("keys-grabbed", on);
-  $("padKeys").hidden = !on;
+function canInjectKeys() {
+  return role === "local" && !!ws && ws.readyState === WebSocket.OPEN;
+}
+
+function keyboardGrabbed() {
+  return keysArmed && canArmKeys();
+}
+
+function updateGrabButton() {
+  const btn = $("grabKeysBtn");
+  if (!btn) return;
+  if (role === "participant") {
+    btn.hidden = true;
+    btn.disabled = true;
+    return;
+  }
+  btn.hidden = false;
+  btn.disabled = !canArmKeys();
+  btn.textContent = keysArmed ? "Release keyboard" : "Grab keyboard";
+}
+
+function setKeysArmed(on, { silent = false } = {}) {
+  const next = Boolean(on) && canArmKeys();
+  if (!next) releaseHeldKeys();
+  const changed = next !== keysArmed;
+  keysArmed = next;
+  padWrap.classList.toggle("keys-grabbed", keysArmed);
+  $("padKeys").hidden = !keysArmed;
+  updateGrabButton();
+  if (!silent && changed) {
+    log(keysArmed ? "keyboard grabbed — type with your keyboard" : "keyboard released");
+  }
+}
+
+function isEditableTarget(ev) {
+  const t = ev.target;
+  if (!t || t === canvas || t === padWrap || t === padStage) return false;
+  const tag = t.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (t.isContentEditable) return true;
+  return false;
 }
 
 function blockedShortcut(ev) {
@@ -627,21 +711,31 @@ function shouldIgnoreKeyEvent(ev) {
 }
 
 function emitKey(action, ev) {
-  if (!injectsLocally()) return false;
   const modifiers = eventModifiers(ev);
-  const payload = { type: action, code: ev.code, key: ev.key, modifiers };
-  const ok = send(payload, { silent: true });
-  keyEventLog += 1;
-  if (sampleLog(keyEventLog)) {
-    log(`${action} ${ev.code} ${ev.key} [${modifiers.join("+") || "none"}]`);
+  const code = ev.code;
+  const key = ev.key;
+  log(`${action} ${code} ${key} [${modifiers.join("+") || "none"}]`);
+  if (role === "host") {
+    return publishFirebase(FIREBASE_KEY_KEY, formatKeyPayload(action, code, key, modifiers));
   }
-  return ok;
+  if (canInjectKeys()) {
+    return send({ type: action, code, key, modifiers }, { silent: true });
+  }
+  return false;
 }
 
 function releaseHeldKeys() {
   const codes = [...heldKeys];
   heldKeys.clear();
   if (!codes.length) return;
+  if (role === "host") {
+    for (const code of codes) {
+      publishFirebase(FIREBASE_KEY_KEY, formatKeyPayload("key.up", code, "", []));
+    }
+    publishFirebase(FIREBASE_KEY_KEY, formatKeyPayload("key.releaseAll"));
+    log(`keys released (${codes.length})`);
+    return;
+  }
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   for (const code of codes) {
     send({ type: "key.up", code, key: "", modifiers: [] }, { silent: true });
@@ -715,15 +809,20 @@ function injectRemote(obj, { silent = false } = {}) {
     return false;
   }
   if (!silent) {
-    const extra =
-      obj.type === "mouse.scroll"
-        ? ` dx=${obj.dx} dy=${obj.dy}`
-        : obj.button
-          ? ` ${obj.button}`
-          : "";
-    log(
-      `inject ${obj.type}${extra} → ${Math.round(obj.x)},${Math.round(obj.y)}`,
-    );
+    if (obj.type.startsWith("key.")) {
+      const extra = obj.code ? ` ${obj.code}` : "";
+      log(`inject ${obj.type}${extra}`);
+    } else {
+      const extra =
+        obj.type === "mouse.scroll"
+          ? ` dx=${obj.dx} dy=${obj.dy}`
+          : obj.button
+            ? ` ${obj.button}`
+            : "";
+      log(
+        `inject ${obj.type}${extra} → ${Math.round(obj.x)},${Math.round(obj.y)}`,
+      );
+    }
   }
   return true;
 }
@@ -773,6 +872,20 @@ function applyRemoteScroll(parsed) {
   });
 }
 
+function applyRemoteKey(parsed) {
+  if (role !== "participant") return;
+  if (parsed.kind === "kr") {
+    injectRemote({ type: "key.releaseAll" });
+    return;
+  }
+  injectRemote({
+    type: parsed.kind === "kd" ? "key.down" : "key.up",
+    code: parsed.code,
+    key: parsed.key,
+    modifiers: parsed.modifiers || [],
+  });
+}
+
 function onFirebaseValue(key, value) {
   if (!fbPrimed.has(key)) {
     fbPrimed.add(key);
@@ -786,6 +899,7 @@ function onFirebaseValue(key, value) {
   }
   if (isMoveKey) recvMoveLog += 1;
   const stream = isMoveKey ? parseStreamPayload(value) : null;
+  const keyEvent = key === FIREBASE_KEY_KEY ? parseKeyPayload(value) : null;
   const hoverMove = stream?.kind === "move";
   const quietMove = hoverMove && !sampleLog(recvMoveLog);
   if (!quietMove) {
@@ -796,6 +910,15 @@ function onFirebaseValue(key, value) {
     return;
   }
 
+  if (key === FIREBASE_KEY_KEY) {
+    if (!keyEvent) {
+      log(`fb parse key failed ${previewFb(value)}`, "err");
+      return;
+    }
+    applyRemoteKey(keyEvent);
+    return;
+  }
+
   if (isMoveKey) {
     if (!stream) {
       log(`fb parse stream failed ${previewFb(value)}`, "err");
@@ -803,6 +926,10 @@ function onFirebaseValue(key, value) {
     }
     if (stream.kind === "move") {
       applyRemoteMove(stream.mapped);
+      return;
+    }
+    if (stream.kind === "kd" || stream.kind === "ku" || stream.kind === "kr") {
+      applyRemoteKey(stream);
       return;
     }
     if (stream.kind === "down" || stream.kind === "up") {
@@ -871,7 +998,7 @@ function connectAgent() {
     sentButtonDown = false;
     pressStart = null;
     heldKeys.clear();
-    setKeysGrabbed(false);
+    setKeysArmed(false, { silent: true });
     padWrap.classList.remove("active");
     log("closed");
     ws = null;
@@ -1049,8 +1176,6 @@ $("copyRecBtn").onclick = async () => {
   }
 };
 $("padMode").onchange = () => {
-  releaseHeldKeys();
-  canvas.blur();
   if (role === "local") {
     $("padHint").textContent = localHint();
   }
@@ -1061,6 +1186,10 @@ $("padMode").onchange = () => {
 };
 $("pingBtn").onclick = () => send({ type: "ping" });
 $("typeTestBtn").onclick = () => typeHelloTest();
+$("grabKeysBtn").onclick = () => {
+  if (!canArmKeys()) return;
+  setKeysArmed(!keysArmed);
+};
 $("moveBtn").onclick = () =>
   send({ type: "mouse.move", x: Number($("x").value), y: Number($("y").value) }, { silent: true });
 $("clearPathBtn").onclick = () => {
@@ -1085,7 +1214,14 @@ function setCssExpanded(on) {
 }
 
 function updateFsButton() {
-  $("padFsBtn").textContent = padIsFullscreen() ? "Exit fullscreen" : "Fullscreen";
+  const btn = $("padFsBtn");
+  if (padIsFullscreen()) {
+    btn.textContent = "×";
+    btn.title = "Exit fullscreen";
+  } else {
+    btn.textContent = "Fullscreen";
+    btn.title = "Fullscreen";
+  }
 }
 
 async function exitPadFullscreen() {
@@ -1132,7 +1268,13 @@ document.addEventListener("keydown", (ev) => {
     exitPadFullscreen();
     return;
   }
+  if (keyboardGrabbed() && ev.key === "Escape" && !padIsFullscreen()) {
+    ev.preventDefault();
+    setKeysArmed(false);
+    return;
+  }
   if (!keyboardGrabbed()) return;
+  if (isEditableTarget(ev)) return;
   if (padIsFullscreen() && ev.key === "Escape") return;
   if (shouldIgnoreKeyEvent(ev)) {
     if (ev.repeat && heldKeys.has(ev.code)) ev.preventDefault();
@@ -1150,28 +1292,23 @@ document.addEventListener("keydown", (ev) => {
 });
 
 document.addEventListener("keyup", (ev) => {
-  if (!keyboardGrabbed() && !heldKeys.has(ev.code)) return;
-  if (shouldIgnoreKeyEvent(ev) && ev.key !== "Dead") return;
   if (!heldKeys.has(ev.code)) return;
+  if (isEditableTarget(ev) && !keyboardGrabbed()) return;
   heldKeys.delete(ev.code);
   ev.preventDefault();
   emitKey("key.up", ev);
 });
 
 canvas.addEventListener("focus", () => {
-  if (injectsLocally()) setKeysGrabbed(true);
+  if (canArmKeys()) setKeysArmed(true);
 });
 
 canvas.addEventListener("blur", () => {
-  setKeysGrabbed(false);
   releaseHeldKeys();
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) {
-    canvas.blur();
-    releaseHeldKeys();
-  }
+  if (document.hidden) releaseHeldKeys();
 });
 
 window.addEventListener("blur", () => {
@@ -1200,7 +1337,7 @@ function initSquidly() {
   log(`session_info.user=${initial ?? "undefined"}`);
   applyRole(initial === "host" || initial === "participant" ? initial : "host");
   log(
-    `SquidlyAPI present — events multiplexed on firebase key "${FIREBASE_MOVE_KEY}"`,
+    `SquidlyAPI present — mouse on firebase "${FIREBASE_MOVE_KEY}", keys on "${FIREBASE_KEY_KEY}"`,
   );
 
   window.SquidlyAPI.addSessionInfoListener((info) => {
@@ -1212,6 +1349,9 @@ function initSquidly() {
 
   window.SquidlyAPI.firebaseOnValue(FIREBASE_MOVE_KEY, (value) => {
     onFirebaseValue(FIREBASE_MOVE_KEY, value);
+  });
+  window.SquidlyAPI.firebaseOnValue(FIREBASE_KEY_KEY, (value) => {
+    onFirebaseValue(FIREBASE_KEY_KEY, value);
   });
 }
 
