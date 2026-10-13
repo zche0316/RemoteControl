@@ -1,2 +1,4 @@
 -r requirements.txt
 pyinstaller>=6.0
+dmgbuild>=1.6,<2
+CairoSVG>=2.7,<3

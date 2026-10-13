@@ -92,6 +92,7 @@ done
 [[ -x .venv/bin/python ]] || fail "missing project interpreter: .venv/bin/python"
 command -v hdiutil >/dev/null || fail "hdiutil is required (run this script on macOS)"
 command -v codesign >/dev/null || fail "codesign is required (install Xcode command-line tools)"
+.venv/bin/python -c 'import dmgbuild, cairosvg' || fail "install requirements-build.txt before releasing"
 xcrun --find notarytool >/dev/null || fail "notarytool is required (install Xcode command-line tools)"
 xcrun --find stapler >/dev/null || fail "stapler is required (install Xcode command-line tools)"
 
@@ -140,14 +141,10 @@ REMOTE_AGENT_VERSION="$version" REMOTE_AGENT_BUILD="$build_number" \
 [[ -d "$BUNDLE_PATH" ]] || fail "PyInstaller did not produce $BUNDLE_PATH"
 codesign --verify --deep --strict --verbose=2 "$BUNDLE_PATH"
 
-ditto "$BUNDLE_PATH" "$staging_dir/$APP_NAME.app"
-# Finder presents this shortcut as the drop target for installing the app.
-ln -s /Applications "$staging_dir/Applications"
-hdiutil create \
-  -volname "$APP_NAME" \
-  -srcfolder "$staging_dir" \
-  -format UDZO \
-  -ov "$dmg_path"
+.venv/bin/python -m cairosvg packaging/dmg-background.svg -o "$staging_dir/background.png"
+REMOTE_AGENT_DMG_APP="$PWD/$BUNDLE_PATH" \
+REMOTE_AGENT_DMG_BACKGROUND="$staging_dir/background.png" \
+  .venv/bin/python -m dmgbuild -s packaging/dmg-settings.py "$APP_NAME" "$dmg_path"
 
 codesign --force --timestamp --sign "$signing_identity" "$dmg_path"
 codesign --verify --verbose=2 "$dmg_path"
