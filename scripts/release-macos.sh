@@ -141,6 +141,8 @@ REMOTE_AGENT_VERSION="$version" REMOTE_AGENT_BUILD="$build_number" \
 codesign --verify --deep --strict --verbose=2 "$BUNDLE_PATH"
 
 ditto "$BUNDLE_PATH" "$staging_dir/$APP_NAME.app"
+# Finder presents this shortcut as the drop target for installing the app.
+ln -s /Applications "$staging_dir/Applications"
 hdiutil create \
   -volname "$APP_NAME" \
   -srcfolder "$staging_dir" \
@@ -158,6 +160,9 @@ hdiutil verify "$dmg_path"
 
 mounted_dir="$(mktemp -d -t remoteagent-mounted)"
 hdiutil attach -readonly -nobrowse -mountpoint "$mounted_dir" "$dmg_path" >/dev/null
+[[ -L "$mounted_dir/Applications" ]] && \
+  [[ "$(readlink "$mounted_dir/Applications")" == "/Applications" ]] || \
+  fail "DMG is missing its Applications installation shortcut"
 codesign --verify --deep --strict --verbose=2 "$mounted_dir/$APP_NAME.app"
 spctl --assess --type execute --verbose=4 "$mounted_dir/$APP_NAME.app"
 hdiutil detach "$mounted_dir" -quiet
