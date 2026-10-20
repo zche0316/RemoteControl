@@ -16,7 +16,7 @@ a = Analysis(
     [str(root / "agent" / "__main__.py")],
     pathex=[str(root)],
     binaries=[],
-    datas=[],
+    datas=[(str(root / "agent" / "assets"), "agent/assets")],
     hiddenimports=[
         "agent",
         "agent.server",

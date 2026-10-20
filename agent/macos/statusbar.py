@@ -66,6 +66,10 @@ class AgentAppDelegate(NSObject):
     def applicationDidFinishLaunching_(self, _notification) -> None:
         _install_status_item(_listen)
         logger.info("menu bar status item installed")
+        from agent.macos.splash import LaunchSplash
+
+        _retained.append(LaunchSplash.alloc().init().show())
+        logger.info("launch splash shown")
 
     def quitAgent_(self, _sender) -> None:
         logger.info("quit from status menu")
