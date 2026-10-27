@@ -241,6 +241,15 @@ def window_relative_point(bounds: dict, nx: float, ny: float) -> tuple[float, fl
     return (x + px, y + py)
 
 
+_input_transparent_windows: frozenset[int] = frozenset()
+
+
+def set_input_transparent_windows(window_ids) -> None:
+    """Register only our own green panels, which explicitly ignore mouse input."""
+    global _input_transparent_windows
+    _input_transparent_windows = frozenset(int(value) for value in window_ids)
+
+
 def window_hit_at(x: float, y: float) -> int:
     """Ask WindowServer which window would receive a mouse-down here.
 
@@ -251,7 +260,16 @@ def window_hit_at(x: float, y: float) -> int:
         NSApplication.sharedApplication()
         main = CGDisplayBounds(CGMainDisplayID())
         point = (float(x), float(main.size.height) - float(y))
-        return int(NSWindow.windowNumberAtPoint_belowWindowWithWindowNumber_(point, 0))
+        below = 0
+        transparent = _input_transparent_windows
+        for _ in range(len(transparent) + 1):
+            hit = int(NSWindow.windowNumberAtPoint_belowWindowWithWindowNumber_(point, below))
+            if hit not in transparent:
+                return hit
+            if hit == below:
+                return 0
+            below = hit
+        return 0
     except Exception:
         return 0
 

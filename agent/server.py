@@ -12,8 +12,11 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from websockets.asyncio.server import ServerConnection, serve
+from websockets.exceptions import ConnectionClosed
 
 from agent.macos import keyboard, mouse
+from agent.macos.shared_window import WindowPresentation
+from agent import connection_status
 from agent.protocol import (
     KeyDown,
     KeyReleaseAll,
@@ -44,6 +47,10 @@ _PAUSE_MESSAGES = {
     "window_obscured": "Remote control paused. Move the covering window away to resume.",
     "window_focus_unavailable": "Keyboard control paused. Allow Accessibility access for RemoteAgent to resume.",
     "surface_unmatched": "Remote control paused. The shared window could not be identified.",
+    "paused_by_sharer": "Remote control paused by the sharer. Select Resume control when ready.",
+    "window_in_use": "Another session is controlling a window. Stop that control before resuming here.",
+    "checking": "Preparing the shared window for remote control.",
+    "window_binding_unavailable": "This window could not be prepared for control. Select the shared window again.",
 }
 
 
@@ -229,13 +236,22 @@ def dispatch(command: Any, window_id: int | None = None,
 async def handle_client(websocket: ServerConnection) -> None:
     peer = websocket.remote_address
     logger.info("client connected: %s", peer)
+    loop = asyncio.get_running_loop()
+    connection_status.add(websocket, lambda: loop.call_soon_threadsafe(
+        lambda: asyncio.create_task(websocket.close(code=4000, reason="Disconnected from RemoteAgent menu"))))
     _move_pump.start()
     matched_surface: dict[str, Any] | None = None
     last_window_point = (0.5, 0.5)
     check_keyboard_focus = False
+    presentation = WindowPresentation()
+    foreground_control = False
+    bound_surface = None
 
     async def publish_move_pause(reason: str) -> None:
         keyboard.release_all()
+        if foreground_control:
+            await presentation.pause(reason)
+        connection_status.update(websocket, state="Paused · " + reason)
         await websocket.send(json.dumps(_pause_response(reason, "mouse.move")))
 
     _move_pump.set_blocked_handler(publish_move_pause)
@@ -250,7 +266,31 @@ async def handle_client(websocket: ServerConnection) -> None:
 
             try:
                 msg_type = data.get("type") if isinstance(data, dict) else None
+                if msg_type == "session.identify":
+                    connection_status.update(websocket, meeting=data.get("meeting"),
+                                             browser=data.get("browser"), tab=data.get("tab"))
+                    await websocket.send(json.dumps(ok_response("session.identify")))
+                    continue
+                if msg_type in {"surface.activate", "surface.pause"}:
+                    if not foreground_control or not bound_surface or data.get("surfaceId") != bound_surface["id"]:
+                        raise ProtocolError("captured window is not bound to this connection")
+                    _pause_active_input()
+                    reason = (await presentation.activate(bound_surface["id"]) if msg_type == "surface.activate"
+                              else await presentation.pause())
+                    current = mouse.match_captured_surface("window", 0, 0, bound_surface["id"])
+                    response = ok_response(msg_type, **(current or bound_surface), guardedInput=True,
+                        foregroundControl=True, controlAllowed=reason == "ready",
+                        pauseReason=None if reason == "ready" else reason)
+                    if reason == "ready":
+                        matched_surface = current or bound_surface
+                    connection_status.update(websocket, state="Connected · ready" if reason == "ready" else "Paused · " + reason)
+                    await websocket.send(json.dumps(response))
+                    continue
                 if msg_type in {"mouse.move", "mouse.down", "mouse.up", "mouse.click", "mouse.scroll", "key.down", "key.up"}:
+                    if foreground_control:
+                        reason = await presentation.refresh()
+                        if reason != "ready":
+                            raise WindowControlPaused(reason)
                     if not matched_surface or data.get("surfaceId") != matched_surface["id"]:
                         raise ProtocolError("captured surface is not matched")
                     if matched_surface["kind"] == "window":
@@ -279,6 +319,13 @@ async def handle_client(websocket: ServerConnection) -> None:
                         if msg_type.startswith("mouse."):
                             data["x"], data["y"] = mouse.window_relative_point(bounds, float(nx), float(ny))
                 command = parse_message(data)
+                if isinstance(command, SurfaceMatch) and foreground_control and bound_surface:
+                    if command.surface != "window" or command.id not in (None, bound_surface["id"]):
+                        raise ProtocolError("selecting another surface requires a new control connection")
+                    # A refresh queued before the initial reply may not have
+                    # received the ID yet. Pin it to the already-bound window.
+                    command = SurfaceMatch(surface="window", width=command.width,
+                                           height=command.height, id=bound_surface["id"])
                 if isinstance(command, SurfaceMatch) and (
                     matched_surface is None or command.id != matched_surface["id"]
                 ):
@@ -289,14 +336,37 @@ async def handle_client(websocket: ServerConnection) -> None:
                 response = dispatch(command, window_id=window_id, match_point=last_window_point,
                                     check_keyboard_focus=check_keyboard_focus)
                 if isinstance(command, SurfaceMatch):
+                    if data.get("foregroundControl") is True and command.surface == "window":
+                        if response.get("ok") and response.get("kind") == "window":
+                            first_binding = bound_surface is None
+                            bound_surface = {k: v for k, v in response.items() if k in
+                                             {"id", "kind", "x", "y", "width", "height", "owner", "name"}}
+                            foreground_control = True
+                            if first_binding:
+                                reason = (await presentation.pause() if data.get("startPaused") is True
+                                          else await presentation.activate(bound_surface["id"]))
+                            else:
+                                reason = await presentation.refresh()
+                            if reason == "ready" and not response.get("controlAllowed") and not first_binding:
+                                reason = await presentation.pause(response.get("pauseReason") or "window_obscured")
+                            response.update(foregroundControl=True, controlAllowed=reason == "ready",
+                                pauseReason=None if reason == "ready" else reason,
+                                message=None if reason == "ready" else _PAUSE_MESSAGES[reason])
+                        elif foreground_control:
+                            await presentation.pause(response.get("pauseReason") or "window_unavailable")
+                            response["foregroundControl"] = True
                     matched_surface = response if response and response.get("ok") else None
                     if not response.get("controlAllowed", False):
                         _pause_active_input()
             except WindowControlPaused as exc:
                 _pause_active_input()
+                if foreground_control:
+                    await presentation.pause(exc.reason)
                 response = _pause_response(exc.reason, msg_type)
             except mouse.WindowHitMismatch:
                 _pause_active_input()
+                if foreground_control:
+                    await presentation.pause("window_obscured")
                 response = _pause_response("window_obscured", msg_type)
             except ProtocolError as exc:
                 _pause_active_input()
@@ -311,8 +381,22 @@ async def handle_client(websocket: ServerConnection) -> None:
                 )
 
             if response is not None:
+                if msg_type == "surface.match":
+                    connection_status.update(websocket,
+                        window=connection_status.surface_label(response),
+                        state='Connected · ready' if response.get('controlAllowed') else 'Paused · ' + str(response.get('pauseReason') or 'matching shared window'))
+                elif response.get('pauseReason'):
+                    connection_status.update(websocket, state='Paused · ' + str(response['pauseReason']))
                 await websocket.send(json.dumps(response))
+    except ConnectionClosed:
+        logger.info("client connection closed: %s", peer)
     finally:
+        if foreground_control:
+            try:
+                await presentation.close()
+            except Exception:
+                logger.exception("could not clear shared-window frame")
+        connection_status.remove(websocket)
         _move_pump.clear_blocked_handler(publish_move_pause)
         _move_pump.release_held()
         released = keyboard.release_all()
