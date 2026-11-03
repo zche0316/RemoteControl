@@ -1,0 +1,65 @@
+:root {
+  color-scheme: light dark;
+  --agent-surface: #ffffff;
+  --agent-bottom: #fbfafc;
+  --agent-raised: #f8f5fb;
+  --agent-line: #e6e0ed;
+  --agent-text: #242329;
+  --agent-muted: #79717f;
+  --agent-accent: #8d53c5;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Match SquidlySession's panel-dark/darker/panel colors. */
+    --agent-surface: #252222;
+    --agent-bottom: #1b1818;
+    --agent-raised: #3a3737;
+    --agent-line: #4b4545;
+    --agent-text: #f4f1ef;
+    --agent-muted: #b9b1b1;
+    --agent-accent: #c091ee;
+  }
+  .widget .lockup .word { filter: brightness(0) invert(0.95); }
+}
+
+body { color: var(--agent-text); }
+.widget.closed { width: 72px; }
+.widget .ball {
+  width: 72px;
+  height: 128px;
+  border-radius: 999px;
+  padding: 16px 10px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--agent-text);
+  background: var(--agent-surface);
+  border-color: var(--agent-line);
+  box-shadow: 0 2px 7px #00000024;
+}
+.widget.closed .ball { display: flex; }
+.widget .ball squidly-loader { width: 48px; height: 72px; flex: none; overflow: visible; }
+.widget .capsule-label { display: none; }
+.widget .ball .dot {
+  position: static;
+  width: 8px;
+  height: 8px;
+  border: 0;
+}
+.widget .panel {
+  color: var(--agent-text);
+  background: var(--agent-surface);
+  border-color: var(--agent-line);
+}
+.widget .grip { background: var(--agent-line); }
+.widget .details, .widget .bottom { border-color: var(--agent-line); }
+.widget .bottom { background: var(--agent-bottom); }
+.widget .label, .widget .secondary, .widget .notice,
+.widget .bottom, .widget .quit, .widget .collapse { color: var(--agent-muted); }
+.widget .copy, .widget .disconnect {
+  color: var(--agent-accent);
+  background: var(--agent-raised);
+  border-color: var(--agent-line);
+}

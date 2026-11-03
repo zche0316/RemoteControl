@@ -16,6 +16,7 @@ from WebKit import WKWebView, WKWebViewConfiguration
 from agent import connection_status
 
 ASSETS = Path(__file__).resolve().parents[1] / 'assets'
+COLLAPSED_SIZE = (88, 144)  # Vertical 72 x 128 capsule plus the shadow margin.
 
 
 def fit_frame(x, y, width, height, visible):
@@ -32,11 +33,11 @@ class FloatingAgent(NSObject, protocols=[objc.protocolNamed("WKScriptMessageHand
         self.drag_origin = None
         self.defaults = NSUserDefaults.standardUserDefaults()
         frame = NSScreen.mainScreen().visibleFrame()
-        x = self.defaults.doubleForKey_('SquidlyFloatingX') if self.defaults.objectForKey_('SquidlyFloatingX') is not None else frame.origin.x + frame.size.width - 110
+        x = self.defaults.doubleForKey_('SquidlyFloatingX') if self.defaults.objectForKey_('SquidlyFloatingX') is not None else frame.origin.x + frame.size.width - COLLAPSED_SIZE[0] - 24
         y = self.defaults.doubleForKey_('SquidlyFloatingY') if self.defaults.objectForKey_('SquidlyFloatingY') is not None else frame.origin.y + frame.size.height - 160
-        x, y = fit_frame(x, y, 82, 82, frame)
+        x, y = fit_frame(x, y, *COLLAPSED_SIZE, frame)
         self.panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            ((x, y), (82, 82)), NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel,
+            ((x, y), COLLAPSED_SIZE), NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel,
             NSBackingStoreBuffered, False)
         self.panel.setReleasedWhenClosed_(False)
         self.panel.setOpaque_(False)
@@ -47,7 +48,7 @@ class FloatingAgent(NSObject, protocols=[objc.protocolNamed("WKScriptMessageHand
         self.panel.setCollectionBehavior_(NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary)
         config = WKWebViewConfiguration.alloc().init()
         config.userContentController().addScriptMessageHandler_name_(self, 'agent')
-        self.web = WKWebView.alloc().initWithFrame_configuration_(((0, 0), (82, 82)), config)
+        self.web = WKWebView.alloc().initWithFrame_configuration_(((0, 0), COLLAPSED_SIZE), config)
         self.web.setValue_forKey_(False, 'drawsBackground')
         self.panel.setContentView_(self.web)
         self.web.loadFileURL_allowingReadAccessToURL_(NSURL.fileURLWithPath_(str(ASSETS / 'floating.html')), NSURL.fileURLWithPath_(str(ASSETS)))
@@ -62,7 +63,7 @@ class FloatingAgent(NSObject, protocols=[objc.protocolNamed("WKScriptMessageHand
         old = self.panel.frame()
         self.expanded = expanded
         visible = self.visibleScreen()
-        width, height = (328, min(620, visible.size.height - 24)) if expanded else (82, 82)
+        width, height = (328, min(620, visible.size.height - 24)) if expanded else COLLAPSED_SIZE
         x, y = fit_frame(old.origin.x, old.origin.y + old.size.height - height, width, height, visible)
         self.panel.setFrame_display_(((x, y), (width, height)), True)
         self.web.evaluateJavaScript_completionHandler_('window.setExpanded(' + ('true' if expanded else 'false') + ', ' + str(int(visible.size.height - 40)) + ')', None)
@@ -72,7 +73,7 @@ class FloatingAgent(NSObject, protocols=[objc.protocolNamed("WKScriptMessageHand
         frame = self.panel.frame()
         self.defaults.setDouble_forKey_(frame.origin.x, 'SquidlyFloatingX')
         # Persist the collapsed top edge so the next launch doesn't jump down.
-        self.defaults.setDouble_forKey_(frame.origin.y + frame.size.height - 82, 'SquidlyFloatingY')
+        self.defaults.setDouble_forKey_(frame.origin.y + frame.size.height - COLLAPSED_SIZE[1], 'SquidlyFloatingY')
 
     def refresh_(self, _timer):
         if not self.ready:

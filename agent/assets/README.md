@@ -17,7 +17,8 @@ Local source artwork and preview exports are kept in ignored
 ## Floating companion
 
 `floating.html` is a bundled, offline view hosted by `agent/macos/floating.py`.
-It replaces the menu-bar entry with a draggable animated Squidly logo.
+It replaces the menu-bar entry with a draggable vertical capsule containing the
+full animated Squidly logo and connection-status dot, with room for its tentacles.
 The animation reuses login's `squidly-loader` geometry and motion.
 The bridge accepts only messages from this bundled main-frame document;
 connection metadata is rendered as plain text, never HTML.
@@ -26,3 +27,5 @@ The non-activating Cocoa panel keeps keyboard focus on the shared application,
 remembers its collapsed position, and clamps both sizes to the usable display.
 The panel supports multiple connections, copying a meeting ID, disconnecting
 all connections, and quitting. No external web server is used for its UI.
+The capsule and expanded panel follow system appearance. Dark mode uses
+SquidlySession's `#252222` panel and `#1b1818` footer colors.
