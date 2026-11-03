@@ -1,4 +1,4 @@
-"""Thread-safe, display-only connection details for the menu-bar UI."""
+"""Thread-safe, display-only connection details for the floating companion."""
 from threading import Lock
 
 _lock = Lock()

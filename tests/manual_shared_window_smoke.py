@@ -1,4 +1,4 @@
-"""Native smoke check using two disposable Cocoa windows, with no mouse injection.
+"""Native smoke check using two disposable Cocoa windows and one guarded click.
 
 Run from the repository root: .venv/bin/python tests/manual_shared_window_smoke.py
 Restores the previously active app and removes all fixture windows on exit.
@@ -12,13 +12,14 @@ import sys
 import threading
 from concurrent.futures import Future
 import time
+import select
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from AppKit import (
     NSApplication, NSApplicationActivationPolicyAccessory, NSBackingStoreBuffered,
     NSWindow, NSWindowStyleMaskTitled, NSWindowStyleMaskClosable, NSWindowStyleMaskResizable,
-    NSWindowStyleMaskMiniaturizable,
+    NSWindowStyleMaskMiniaturizable, NSButton,
     NSWorkspace, NSApplicationActivateIgnoringOtherApps,
 )
 from ApplicationServices import (
@@ -27,7 +28,7 @@ from ApplicationServices import (
     kAXMainAttribute, kAXPositionAttribute, kAXSizeAttribute, kAXMinimizedAttribute,
     kAXFocusedWindowAttribute,
 )
-from Foundation import NSDate, NSRunLoop
+from Foundation import NSDate, NSRunLoop, NSObject
 from agent.macos import mouse, shared_window as native
 
 
@@ -61,10 +62,16 @@ def assert_ready(presentation):
         f"focused_fixture_window={native.attribute(focused, native.kAXTitleAttribute) if focused else None}")
 
 
+class FixtureButtonTarget(NSObject):
+    def clicked_(self, sender):
+        print(json.dumps({"clicked": self.index}), flush=True)
+
+
 def fixture():
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     windows = []
+    delegates = []
     for index, x in enumerate((80, 700)):
         window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             ((x, 220), (500, 320)),
@@ -72,6 +79,14 @@ def fixture():
             NSBackingStoreBuffered, False)
         window.setReleasedWhenClosed_(False)
         window.setTitle_(f"Squidly native test {index + 1}")
+        delegate = FixtureButtonTarget.alloc().init()
+        delegate.index = index + 1
+        button = NSButton.alloc().initWithFrame_(((50, 40), (400, 240)))
+        button.setTitle_(f"Disposable test button {index + 1}")
+        button.setTarget_(delegate)
+        button.setAction_("clicked:")
+        window.contentView().addSubview_(button)
+        delegates.append(delegate)
         window.makeKeyAndOrderFront_(None)
         windows.append(window)
     print(json.dumps([int(w.windowNumber()) for w in windows]), flush=True)
@@ -90,11 +105,20 @@ def smoke():
     try:
         first, second = json.loads(child.stdout.readline())
         pump(0.5)
+        # Start the fixture target focused for edge hit checks. Presentation
+        # itself must never acquire focus just to maintain the shared window.
+        _, initial_window = native.bind_ax_window(native.target_info(first))
+        native.NSRunningApplication.runningApplicationWithProcessIdentifier_(child.pid).activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+        AXUIElementPerformAction(initial_window, kAXRaiseAction)
+        pump(0.3)
         initial_state = wait_async(presentation.activate(first))
         assert initial_state == "ready", f"could not raise the exact fixture window: {initial_state}"
         pump()
         assert_ready(presentation)
         assert len(native.frame.panels) == 4
+        from AppKit import NSWindowCollectionBehaviorCanJoinAllSpaces
+        assert all(not (p.collectionBehavior() & NSWindowCollectionBehaviorCanJoinAllSpaces) for p in native.frame.panels)
+        assert native.frame.on_active_space(presentation)
         assert all(p.isVisible() and not p.isKeyWindow() and not p.canBecomeKeyWindow() for p in native.frame.panels)
         bounds = native.target_info(first)["kCGWindowBounds"]
         for nx, ny in ((0, 0), (1, 1), (0.5, 0.5)):
@@ -111,32 +135,70 @@ def smoke():
 
         _, other_window = native.bind_ax_window(native.target_info(second))
         assert other_window is not None
+        for name, kind, value in ((kAXPositionAttribute, kAXValueCGPointType, (110, 150)),
+                                  (kAXSizeAttribute, kAXValueCGSizeType, (540, 360))):
+            assert AXUIElementSetAttributeValue(other_window, name, AXValueCreate(kind, value)) == 0
         AXUIElementSetAttributeValue(other_window, kAXMainAttribute, True)
         AXUIElementPerformAction(other_window, kAXRaiseAction)
         pump()
-        assert presentation._refresh() == "window_not_frontmost"
-        assert all(not p.isVisible() for p in native.frame.panels)
-        AXUIElementSetAttributeValue(presentation.window, kAXMainAttribute, True)
-        AXUIElementPerformAction(presentation.window, kAXRaiseAction)
-        pump()
-        assert presentation._refresh() == "window_not_frontmost", "pause resumed without explicit action"
-        assert wait_async(presentation.activate(first)) == "ready"
-        pump()
+        pump(0.8)
         assert_ready(presentation)
-        print("PASS switching to another window of the same app pauses; explicit resume restores original", flush=True)
+        bounds = native.target_info(first)["kCGWindowBounds"]
+        focused = native.attribute(presentation.app, kAXFocusedWindowAttribute)
+        assert focused is not None and native.CFEqual(focused, other_window)
+        assert mouse.window_control_state(first)[0] == "window_obscured"
+        print("PASS same-app meeting window keeps focus; unsafe remote destination stays blocked", flush=True)
+
+        wait_async(presentation.focus_for_input())
+        bounds = native.target_info(first)["kCGWindowBounds"]
+        point = mouse.window_relative_point(bounds, 0.5, 0.5)
+        assert mouse.window_hit_at(*point) == first
+        mouse.click(*point, window_id=first)
+        assert select.select([child.stdout], [], [], 3)[0], "fixture did not receive the click"
+        assert json.loads(child.stdout.readline()) == {"clicked": 1}, "covering window received the click"
+        print("PASS explicit remote action raises the exact shared window and clicks its disposable button, not the cover", flush=True)
+
+        if previous and previous.processIdentifier() != presentation.pid:
+            previous.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+            pump(0.8)
+            assert_ready(presentation)
+            assert NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() == previous.processIdentifier()
+            print("PASS switching to another application keeps local application focus", flush=True)
+
+        assert wait_async(presentation.pause()) == "paused_by_sharer"
+        AXUIElementSetAttributeValue(other_window, kAXMainAttribute, True)
+        AXUIElementPerformAction(other_window, kAXRaiseAction)
+        pump()
+        assert presentation._refresh() == "paused_by_sharer"
+        assert all(not p.isVisible() for p in native.frame.panels)
+        assert wait_async(presentation.recover("window_obscured")) == "paused_by_sharer"
+        assert wait_async(presentation.activate(first)) == "ready"
+        print("PASS manual pause stops raising, including late blocked-input callbacks; resume restores original", flush=True)
 
         assert AXUIElementSetAttributeValue(presentation.window, kAXMinimizedAttribute, True) == 0
-        pump()
+        pump(1.5)
         minimized_state = presentation._refresh()
-        assert minimized_state == "window_unavailable", f"minimized window reported {minimized_state}"
-        restored_state = wait_async(presentation.activate(first))
-        assert restored_state == "ready", (
-            f"restore reported {restored_state}; minimized={native.attribute(presentation.window, kAXMinimizedAttribute)}; "
-            f"visible={native.target_info(first) is not None}; foreground="
-            f"{NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier() == presentation.pid}")
-        pump()
+        assert minimized_state == "window_minimized", f"state={minimized_state}; AXMinimized={native.attribute(presentation.window, kAXMinimizedAttribute)}; info={native.target_info(first, include_hidden=True) is not None}"
+        assert native.attribute(presentation.window, kAXMinimizedAttribute)
+        assert all(not p.isVisible() for p in native.frame.panels)
+        assert wait_async(presentation.activate(first)) == "ready"
         assert_ready(presentation)
-        print("PASS minimizing pauses; explicit resume restores the same window", flush=True)
+        print("PASS minimizing stays paused/minimized; only explicit Resume restores the same window", flush=True)
+
+        successor = native.WindowPresentation()
+        assert wait_async(successor.activate(first)) == "window_in_use"
+        assert wait_async(successor.refresh()) == "window_in_use"
+        assert native.frame.owner is presentation
+        previous_owner = presentation
+        wait_async(previous_owner.close())
+        presentation = successor
+        assert wait_async(presentation.refresh()) == "ready"
+        assert native.frame.owner is presentation
+        # Late cleanup from the old connection cannot hide the new frame.
+        wait_async(previous_owner.close())
+        assert_ready(presentation)
+        assert all(p.isVisible() for p in native.frame.panels)
+        print("PASS overlapping connections wait without takeover; owner disconnect automatically activates exact bound window", flush=True)
     finally:
         wait_async(presentation.close())
         assert all(not p.isVisible() for p in native.frame.panels)
@@ -149,7 +211,7 @@ def smoke():
         print("Fixture closed, green frame cleared, previous app restored", flush=True)
 
 
-def existing_window_smoke():
+def existing_window_smoke(handoff_only=False):
     """Raise/frame the already-frontmost real application without editing it."""
     logging.basicConfig(level=logging.INFO)
     NSApplication.sharedApplication().setActivationPolicy_(NSApplicationActivationPolicyAccessory)
@@ -167,9 +229,29 @@ def existing_window_smoke():
         pump()
         assert_ready(presentation)
         bounds = native.target_info(window_id)["kCGWindowBounds"]
-        for point in ((0, 0), (1, 1), (0.5, 0.5)):
+        # A running Agent may also have its own edge frame on this window.
+        # Handoff-only mode checks the center without modifying that instance.
+        for point in (((0.5, 0.5),) if handoff_only else ((0, 0), (1, 1), (0.5, 0.5))):
             assert mouse.window_hit_at(*mouse.window_relative_point(bounds, *point)) == window_id
-        print(f"PASS current {front.localizedName()} window id={window_id}: exact AX binding, foreground, green frame, edge hit checks", flush=True)
+        print(f"PASS current {front.localizedName()} window id={window_id}: exact AX binding, foreground, green frame, hit checks", flush=True)
+        if handoff_only:
+            waiting = native.WindowPresentation()
+            assert wait_async(waiting.activate(window_id)) == "window_in_use"
+            assert wait_async(waiting.refresh()) == "window_in_use"
+            assert native.frame.owner is presentation
+            assert wait_async(waiting.pause()) == "paused_by_sharer"
+            assert wait_async(waiting.refresh()) == "paused_by_sharer"
+            assert wait_async(waiting.activate(window_id)) == "window_in_use"
+            previous_owner = presentation
+            wait_async(previous_owner.close())
+            presentation = waiting
+            assert wait_async(presentation.refresh()) == "ready"
+            assert native.frame.owner is presentation
+            wait_async(previous_owner.close())
+            assert_ready(presentation)
+            assert all(p.isVisible() for p in native.frame.panels)
+            assert presentation.window_id == window_id
+            print("PASS same-window connection handoff: wait, cancel, rejoin, owner exit, automatic recovery, late cleanup isolation", flush=True)
     finally:
         wait_async(presentation.close())
         print("Real application kept open; green frame cleared", flush=True)
@@ -178,6 +260,8 @@ def existing_window_smoke():
 if __name__ == "__main__":
     if "--fixture" in sys.argv:
         fixture()
+    elif "--handoff-only" in sys.argv:
+        existing_window_smoke(handoff_only=True)
     elif "--existing-window" in sys.argv:
         existing_window_smoke()
     else:

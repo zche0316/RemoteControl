@@ -117,9 +117,11 @@ class AgentInjectionTests(unittest.IsolatedAsyncioTestCase):
         from agent import server
 
         pauses = []
+        notified = asyncio.Event()
 
         async def blocked(reason):
             pauses.append(reason)
+            notified.set()
 
         pump = server.MovePump()
         pump.set_blocked_handler(blocked)
@@ -127,10 +129,12 @@ class AgentInjectionTests(unittest.IsolatedAsyncioTestCase):
               patch.object(server.mouse, "move", side_effect=mouse.WindowHitMismatch(42))):
             pump.start()
             pump.set_target(100, 100, 42)
-            await asyncio.sleep(0.01)
-            pump._task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await pump._task
+            try:
+                await asyncio.wait_for(notified.wait(), timeout=10)
+            finally:
+                pump._task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await pump._task
 
         self.assertEqual(pauses, ["window_obscured"])
 
