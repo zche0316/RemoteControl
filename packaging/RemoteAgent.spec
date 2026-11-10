@@ -20,6 +20,10 @@ a = Analysis(
     hiddenimports=[
         "agent",
         "agent.server",
+        "agent.capture_server",
+        "agent.macos.capture",
+        "ScreenCaptureKit",
+        "CoreMedia",
         "agent.protocol",
         "agent.macos",
         "agent.macos.mouse",
@@ -30,6 +34,7 @@ a = Analysis(
         "objc",
         "Quartz",
         "Quartz.CoreGraphics",
+        "Quartz.CoreImage",
         "ApplicationServices",
         "Cocoa",
         "AppKit",

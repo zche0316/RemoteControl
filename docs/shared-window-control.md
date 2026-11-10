@@ -1,8 +1,32 @@
 # Foreground window control
 
-Single-window control uses the same captured WindowServer ID throughout a
-connection. The initial unique video-size match is unchanged. Once bound,
-refreshes never select a different window by size.
+On macOS 15.2 or later with an updated RemoteAgent, the Share screen action uses RemoteAgent's ScreenCaptureKit picker.
+One native single-window selection supplies both the SCContentFilter used to
+capture pixels and the WindowServer ID used for control. The webpage never
+matches video dimensions, window titles, or frontmost applications to identify
+the shared window, and there is no second window picker.
+
+A dedicated localhost `/capture` WebSocket sends `capture.info`, accepts one
+`capture.start`, then returns `capture.started` with the native ID and a random
+capture lease. Binary JPEG frames follow. The browser keeps only the newest
+pending frame, draws it into a canvas stream, and passes that stream to the
+existing meeting WebRTC connection. Native capture is limited to 20 fps and a
+1920-pixel longest edge. Geometry changes update the stream configuration;
+width and height are presentation data, never binding authorization.
+
+Remote control is still off after sharing starts. When it is enabled through
+the existing meeting flow, `surface.match` references the live `captureId`.
+The Agent resolves that lease to the original window ID and rejects missing,
+expired, or mismatched capture references. Closing the capture socket, stopping
+from macOS, closing the window, or disconnecting the Agent revokes the lease,
+releases owned held input and hides the control frame. Resume cannot revive an
+ended capture. Pausing remote control alone keeps the video share running.
+
+If native sharing is unavailable, the page offers an explicit browser tab/screen
+sharing action. Browser sharing can continue without native window control;
+the page explains that RemoteAgent window sharing is required to allow control.
+Canceling the native picker leaves an existing share intact. Replacing a share
+retires the previous capture only once the new selection produces a picture.
 
 The webpage requests `foregroundControl: true` on `surface.match`. The agent
 uniquely associates the window with its owning application's Accessibility
@@ -51,7 +75,7 @@ and stops raising. Polling never unminimizes it. Only explicit Resume restores
 that same window. If the window still exists but is not on-screen, use
 `window_not_visible`: return to its desktop (or show the hidden window), then
 Resume. Neither background refresh nor Resume raises a non-minimized window
-that remains off-screen. These control pauses do not stop the browser video.
+that remains off-screen. These control pauses do not stop the shared video.
 An off-screen/disappearing window has a 400ms observation grace period (without
 raising) to let minimize animations update AXMinimized before classifying it.
 
@@ -68,8 +92,7 @@ The existing remote-control toolbar button still ends the control session.
 
 Window restoration is asynchronous. An explicit resume waits briefly for the
 native restore transition before reporting failure. Accessibility
-permission is required. The capture-start browser focus hint is best effort;
-native presentation follows the frame afterward; explicit control actions can raise.
+permission is required. Native presentation follows the bound window; explicit control actions can raise.
 
 The final per-point WindowServer hit check and the focused-window keyboard
 check remain active. A validated remote click, button-down, scroll or keyboard
@@ -88,6 +111,7 @@ appear between the final check and event injection.
 ```sh
 .venv/bin/python -m unittest discover -s tests -v
 .venv/bin/python tests/manual_shared_window_smoke.py
+.venv/bin/python tests/manual_unified_capture_smoke.py
 .venv/bin/python tests/manual_shared_window_smoke.py --existing-window
 .venv/bin/python tests/manual_shared_window_smoke.py --handoff-only
 ```
@@ -107,8 +131,9 @@ the already-frontmost window without creating competing test application windows
 
 ## Capture replacement
 
-The webpage requests `surfaceSwitching: "exclude"`; use its Share screen picker
-to select another source. This is a browser hint, not a source-identity API.
+The native picker disables inline source changes. Use Share screen again to
+select another source. The explicit browser-sharing fallback requests
+`surfaceSwitching: "exclude"` as a browser hint.
 Selection revokes the old control locally and closes its Agent connection,
 clearing the bound ID, queued input and stale callbacks. The new stream keeps
 playing but requires a new control authorization. Both participants see a small
@@ -122,4 +147,4 @@ source replacement, so native inline switching is not an advertised flow.
 RTC control inputs carry their `controlId`. The sharer rejects legacy/unscoped
 inputs and those from an old authorization, including after selecting a new
 same-sized window. Both participants must reload the updated webpage. This
-does not replace the initial native unique-match or per-event hit guards.
+does not replace capture-lease validation or the per-event hit guards.

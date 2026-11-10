@@ -42,6 +42,7 @@ DEFAULT_PORT = 8765
 _MOVE_HZ = 90.0
 
 _PAUSE_MESSAGES = {
+    "capture_unavailable": "Window sharing ended. Share the window again to allow control.",
     "surface_selection_required": "Select the window or screen you are sharing to allow remote control.",
     "window_minimized": "The shared window was minimized. Select Resume control to restore it.",
     "window_not_visible": "The shared window is not visible on this desktop. Return to its desktop or show it, then select Resume control.",
@@ -259,6 +260,10 @@ def dispatch(command: Any, window_id: int | None = None,
 
 
 async def handle_client(websocket: ServerConnection) -> None:
+    if getattr(getattr(websocket, "request", None), "path", None) == "/capture":
+        from agent.capture_server import handle_capture
+        await handle_capture(websocket)
+        return
     peer = websocket.remote_address
     logger.info("client connected: %s", peer)
     loop = asyncio.get_running_loop()
@@ -272,6 +277,7 @@ async def handle_client(websocket: ServerConnection) -> None:
     foreground_control = False
     bound_surface = None
     legacy_input_owned = False
+    capture_lease = None
 
     def owns_input():
         return presentation.owns_control if foreground_control else legacy_input_owned
@@ -279,6 +285,15 @@ async def handle_client(websocket: ServerConnection) -> None:
     def pause_own_input():
         if owns_input():
             _pause_active_input()
+
+    async def capture_stopped():
+        pause_own_input()
+        if foreground_control:
+            await presentation.pause("capture_unavailable")
+        try:
+            await websocket.send(json.dumps(_pause_response("capture_unavailable", "surface.match")))
+        except ConnectionClosed:
+            pass
 
     async def publish_move_pause(reason: str) -> None:
         if not owns_input():
@@ -311,6 +326,8 @@ async def handle_client(websocket: ServerConnection) -> None:
                     await websocket.send(json.dumps(ok_response("session.identify")))
                     continue
                 if msg_type in {"surface.activate", "surface.pause"}:
+                    if capture_lease is not None and (capture_lease.closed or capture_lease.ended):
+                        raise WindowControlPaused("capture_unavailable")
                     if not foreground_control or not bound_surface or data.get("surfaceId") != bound_surface["id"]:
                         raise ProtocolError("captured window is not bound to this connection")
                     pause_own_input()
@@ -326,6 +343,8 @@ async def handle_client(websocket: ServerConnection) -> None:
                     await websocket.send(json.dumps(response))
                     continue
                 if msg_type in {"mouse.move", "mouse.down", "mouse.up", "mouse.click", "mouse.scroll", "key.down", "key.up"}:
+                    if capture_lease is not None and (capture_lease.closed or capture_lease.ended):
+                        raise WindowControlPaused("capture_unavailable")
                     parse_message(data)  # Validate the complete request before native focus changes.
                     if foreground_control:
                         reason = await presentation.refresh()
@@ -370,6 +389,16 @@ async def handle_client(websocket: ServerConnection) -> None:
                         legacy_input_owned = True
                     _move_pump.set_blocked_handler(publish_move_pause)
                 command = parse_message(data)
+                if isinstance(command, SurfaceMatch) and (data.get("captureId") is not None or capture_lease is not None):
+                    from agent.macos.capture import resolve_capture
+                    lease = resolve_capture(data.get("captureId"))
+                    if lease is None or (capture_lease is not None and lease is not capture_lease):
+                        raise WindowControlPaused("capture_unavailable")
+                    if command.surface != "window" or command.id not in (None, lease.window_id):
+                        raise ProtocolError("control must target the captured window")
+                    capture_lease = lease
+                    lease.stop_callbacks.add(capture_stopped)
+                    command = SurfaceMatch(surface="window", width=command.width, height=command.height, id=lease.window_id)
                 if isinstance(command, KeyReleaseAll) and not owns_input():
                     await websocket.send(json.dumps(ok_response("key.releaseAll")))
                     continue
@@ -453,6 +482,8 @@ async def handle_client(websocket: ServerConnection) -> None:
     except ConnectionClosed:
         logger.info("client connection closed: %s", peer)
     finally:
+        if capture_lease is not None:
+            capture_lease.stop_callbacks.discard(capture_stopped)
         # Release held input before publishing ownership as available. A waiting
         # connection must never release keys/buttons belonging to the owner.
         pause_own_input()
