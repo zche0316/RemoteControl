@@ -47,7 +47,10 @@ to report the target as on-screen. Returning requires Resume. New control
 owners get fresh panels; moving the target between Spaces can reattach them
 on explicit Resume only when an OS hit confirms the target on the new desktop.
 
-While control is active, a 100ms timer tracks the exact window and its frame.
+While control is active, a common-run-loop timer follows the exact window at
+60Hz. A targeted WindowServer lookup updates geometry between 100ms status
+checks, without repeating Accessibility queries on every frame. Unchanged
+geometry is not redrawn or reordered.
 It never raises windows, activates applications or sets main/focused window
 attributes. Even a plain AXRaise can undo an in-progress minimize animation
 before AXMinimized changes, so all raising is reserved for explicit actions.

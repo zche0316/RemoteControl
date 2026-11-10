@@ -28,11 +28,11 @@ from ApplicationServices import (
     kAXErrorCannotComplete,
 )
 from CoreFoundation import CFEqual
-from Foundation import NSTimer
+from Foundation import NSTimer, NSRunLoop, NSRunLoopCommonModes
 from PyObjCTools.AppHelper import callAfter
 from Quartz import (
     CGWindowListCopyWindowInfo, kCGNullWindowID, kCGWindowListOptionAll,
-    kCGWindowListOptionOnScreenOnly, kCGWindowListExcludeDesktopElements,
+    kCGWindowListOptionOnScreenOnly, kCGWindowListExcludeDesktopElements, kCGWindowListOptionIncludingWindow,
 )
 
 from agent.macos import mouse
@@ -134,6 +134,10 @@ class GreenFrame:
         if not self.on_active_space(owner):
             self.hide(owner)
             return
+        geometry = tuple(float(bounds[key]) for key in ("X", "Y", "Width", "Height"))
+        if getattr(self, "_last_geometry", None) == geometry and self.panels and all(panel.isVisible() for panel in self.panels):
+            return
+        self._last_geometry = geometry
         if not self.panels:
             NSApplication.sharedApplication()
             for _ in range(4):
@@ -184,6 +188,7 @@ class WindowPresentation:
         self.timer = None
         self.recovering_since = None
         self.waiting_window_id = None
+        self._last_status_check = 0.0
 
     @property
     def owns_control(self):
@@ -345,7 +350,8 @@ class WindowPresentation:
             else:
                 frame.hide(self)
             if self.timer is None:
-                self.timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(0.1, True, self._tick)
+                self.timer = NSTimer.timerWithTimeInterval_repeats_block_(1 / 60, True, self._tick)
+                NSRunLoop.mainRunLoop().addTimer_forMode_(self.timer, NSRunLoopCommonModes)
         elif reason != "ready":
             if latch:
                 self.paused_reason = reason
@@ -359,7 +365,18 @@ class WindowPresentation:
         if self.timer is None or _timer != self.timer:
             return
         try:
-            self._refresh()
+            now = time.monotonic()
+            if now - self._last_status_check >= 0.1:
+                self._last_status_check = now
+                self._refresh()
+            elif not self.paused_reason and self.window_id is not None:
+                # Geometry only: avoid Accessibility round trips on every frame.
+                items = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, self.window_id) or []
+                info = next((item for item in items if int(item.get("kCGWindowNumber") or 0) == self.window_id), None)
+                if info and int(info.get("kCGWindowOwnerPID") or 0) == self.pid and info.get("kCGWindowIsOnscreen", True):
+                    frame.show(self, info["kCGWindowBounds"])
+                else:
+                    frame.hide(self)
         except Exception:
             self.paused_reason = "window_focus_unavailable"
             frame.hide(self)

@@ -133,6 +133,18 @@ def smoke():
         assert abs(native.frame.panels[0].frame().origin.x - float(bounds["X"])) < 1
         print("PASS green frame follows actual moved/resized window", flush=True)
 
+        assert presentation.timer.timeInterval() <= 1 / 60 + 0.001
+        # Observe the timer itself: no explicit refresh may mask a slow frame.
+        for x in range(120, 220, 10):
+            assert AXUIElementSetAttributeValue(presentation.window, kAXPositionAttribute,
+                AXValueCreate(kAXValueCGPointType, (x, 150))) == 0
+            pump(0.04)
+            current = native.target_info(first)["kCGWindowBounds"]
+            assert abs(native.frame.panels[0].frame().origin.x - float(current["X"])) < 1
+        AXUIElementSetAttributeValue(presentation.window, kAXPositionAttribute, AXValueCreate(kAXValueCGPointType, (110, 150)))
+        pump(0.04)
+        print("PASS green frame follows 10 consecutive moves within a 40ms observation interval", flush=True)
+
         _, other_window = native.bind_ax_window(native.target_info(second))
         assert other_window is not None
         for name, kind, value in ((kAXPositionAttribute, kAXValueCGPointType, (110, 150)),
