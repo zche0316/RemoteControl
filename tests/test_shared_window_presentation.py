@@ -207,7 +207,7 @@ class ForegroundProtocolTests(unittest.IsolatedAsyncioTestCase):
                 self.sent.append(json.loads(raw))
 
             async def __aiter__(self):
-                for message in (dict(type="surface.match", surface="window", width=400, height=300, foregroundControl=True),
+                for message in (dict(type="surface.match", surface="window", id=42, width=400, height=300, foregroundControl=True),
                                 dict(type="mouse.move", surfaceId=42, nx=0.5, ny=0.5, x=210, y=170),
                                 dict(type="mouse.click", surfaceId=42, nx=0.5, ny=0.5, x=210, y=170)):
                     yield json.dumps(message)
@@ -263,7 +263,7 @@ class ForegroundProtocolTests(unittest.IsolatedAsyncioTestCase):
                         pass
 
                     async def __aiter__(self):
-                        for message in (dict(type="surface.match", surface="window", width=400, height=300, foregroundControl=True),
+                        for message in (dict(type="surface.match", surface="window", id=42, width=400, height=300, foregroundControl=True),
                                         dict(type="key.down", surfaceId=42, code="KeyA", modifiers=[])):
                             yield json.dumps(message)
 
@@ -318,7 +318,7 @@ class ForegroundProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def test_waiting_socket_cannot_release_owners_input_or_replace_its_move_callback(self):
         from agent import server
         matched = dict(id=42, kind="window", x=10, y=20, width=400, height=300)
-        match = dict(type="surface.match", surface="window", width=400, height=300, foregroundControl=True)
+        match = dict(type="surface.match", surface="window", id=42, width=400, height=300, foregroundControl=True)
 
         class Socket:
             remote_address = ("127.0.0.1", 1234)
@@ -384,7 +384,7 @@ class ForegroundProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def test_unsafe_click_is_dropped_but_periodic_refresh_does_not_latch_occlusion(self):
         from agent import server
         matched = dict(id=42, kind="window", x=10, y=20, width=400, height=300)
-        match = dict(type="surface.match", surface="window", width=400, height=300, foregroundControl=True)
+        match = dict(type="surface.match", surface="window", id=42, width=400, height=300, foregroundControl=True)
 
         class Socket:
             remote_address = ("127.0.0.1", 1234)
@@ -437,7 +437,7 @@ class ForegroundProtocolTests(unittest.IsolatedAsyncioTestCase):
         from agent import server
         matched = dict(id=42, kind="window", x=10, y=20, width=400, height=300)
         messages = [
-            dict(type="surface.match", surface="window", width=400, height=300, foregroundControl=True),
+            dict(type="surface.match", surface="window", id=42, width=400, height=300, foregroundControl=True),
             dict(type="surface.pause", surfaceId=42),
             dict(type="mouse.click", surfaceId=42, x=210, y=170, nx=0.5, ny=0.5),
             dict(type="surface.activate", surfaceId=99),

@@ -42,6 +42,7 @@ DEFAULT_PORT = 8765
 _MOVE_HZ = 90.0
 
 _PAUSE_MESSAGES = {
+    "surface_selection_required": "Select the window or screen you are sharing to allow remote control.",
     "window_minimized": "The shared window was minimized. Select Resume control to restore it.",
     "window_not_visible": "The shared window is not visible on this desktop. Return to its desktop or show it, then select Resume control.",
     "window_unavailable": "Shared window is unavailable. Restore it to resume control.",
@@ -64,6 +65,8 @@ class WindowControlPaused(ProtocolError):
 
 
 def _control_status(reason: str) -> str:
+    if reason == "surface_selection_required":
+        return "Waiting · confirm the shared window in your meeting"
     if reason == "ready":
         return "Connected · ready"
     if reason == "preparing_window":
@@ -165,7 +168,7 @@ _move_pump = MovePump()
 
 
 def screen_info_response() -> dict[str, Any]:
-    return ok_response("screen.info", **mouse.main_display_bounds())
+    return ok_response("screen.info", explicitSurfaceBinding=True, **mouse.main_display_bounds())
 
 
 def _pause_active_input() -> None:
@@ -184,6 +187,14 @@ def dispatch(command: Any, window_id: int | None = None,
         return screen_info_response()
 
     if isinstance(command, SurfaceMatch):
+        if command.id is None:
+            items = mouse.list_displays() if command.surface == "monitor" else mouse.list_windows()
+            # Selection is local to the sharer. Dimensions never authorize a
+            # window; even an exact, unique size match requires confirmation.
+            candidates = [{key: value for key, value in item.items() if key in
+                           {"id", "name", "owner", "x", "y", "width", "height"}} for item in items]
+            return {**_pause_response("surface_selection_required", "surface.match"),
+                    "candidates": candidates, "explicitSurfaceBinding": True}
         matched = mouse.match_captured_surface(command.surface, command.width, command.height, command.id)
         if not matched:
             reason = "window_unavailable" if command.id is not None else "surface_unmatched"

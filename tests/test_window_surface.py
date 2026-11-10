@@ -16,6 +16,20 @@ def window(window_id, x, y, width, height, pid=100):
 
 
 class WindowSurfaceTests(unittest.TestCase):
+    def test_initial_binding_requires_explicit_id_even_with_unique_exact_size(self):
+        from agent.server import dispatch
+        from agent.protocol import SurfaceMatch
+        target = {"id": 42, "x": 0, "y": 0, "width": 400, "height": 300, "owner": "Test"}
+        for items in ([target], [target, {**target, "id": 43}]):
+            with patch.object(mouse, "list_windows", return_value=items):
+                self.assertIsNone(mouse.match_captured_surface("window", 400, 300))
+                reply = dispatch(SurfaceMatch(surface="window", width=400, height=300))
+                self.assertFalse(reply["ok"])
+                self.assertEqual(reply["pauseReason"], "surface_selection_required")
+                self.assertEqual([item["id"] for item in reply["candidates"]], [item["id"] for item in items])
+                self.assertEqual(mouse.match_captured_surface("window", 0, 0, 42)["id"], 42)
+                self.assertIsNone(mouse.match_captured_surface("window", 400, 300, 99))
+
     def test_normalized_edges_are_kept_inside_window_bounds(self):
         bounds = {"X": 10, "Y": 20, "Width": 400, "Height": 300}
         self.assertEqual(mouse.window_relative_point(bounds, 0, 0), (10.5, 20.5))
@@ -165,7 +179,7 @@ class AgentInjectionTests(unittest.IsolatedAsyncioTestCase):
                 self.sent.append(json.loads(value))
 
             async def __aiter__(self):
-                yield json.dumps({'type': 'surface.match', 'surface': 'window', 'width': 400, 'height': 400})
+                yield json.dumps({'type': 'surface.match', 'surface': 'window', 'id': 42, 'width': 400, 'height': 400})
                 yield json.dumps({'type': 'mouse.click', 'surfaceId': 42, 'nx': 0.5, 'ny': 0.5, 'x': 200, 'y': 200})
 
         socket = Socket()
@@ -192,7 +206,7 @@ class AgentInjectionTests(unittest.IsolatedAsyncioTestCase):
                 self.sent.append(json.loads(value))
 
             async def __aiter__(self):
-                yield json.dumps({'type': 'surface.match', 'surface': 'window', 'width': 400, 'height': 400})
+                yield json.dumps({'type': 'surface.match', 'surface': 'window', 'id': 42, 'width': 400, 'height': 400})
                 yield json.dumps({'type': 'mouse.click', 'surfaceId': 42, 'nx': 0.25, 'ny': 0.5,
                                   'x': 100, 'y': 200})
 

@@ -83,12 +83,6 @@ def _post(event) -> None:
     CGEventPost(kCGHIDEventTap, event)
 
 
-_SIZE_ABS_TOL = 16.0
-_SIZE_REL_TOL = 0.03
-_SCALES = (1.0, 2.0, 3.0)
-_AMBIGUOUS_ERR = 8.0
-
-
 def _quartz_rect_from_cg(bounds) -> dict[str, float]:
     return {
         "x": float(bounds.origin.x),
@@ -136,7 +130,7 @@ def list_windows() -> list[dict[str, float | str | int]]:
             y = float(bounds.get("Y", 0))
         except (TypeError, ValueError, AttributeError):
             continue
-        if layer != 0 or alpha < 0.5 or width < 64 or height < 48:
+        if layer != 0 or alpha < 0.5 or width <= 0 or height <= 0:
             continue
         out.append(
             {
@@ -153,50 +147,10 @@ def list_windows() -> list[dict[str, float | str | int]]:
     return out
 
 
-def _size_close(sw: float, sh: float, vw: float, vh: float) -> bool:
-    return abs(sw - vw) <= max(_SIZE_ABS_TOL, vw * _SIZE_REL_TOL) and abs(sh - vh) <= max(
-        _SIZE_ABS_TOL, vh * _SIZE_REL_TOL
-    )
-
-
-def _best_scale_error(item_w: float, item_h: float, vw: float, vh: float) -> float | None:
-    best: float | None = None
-    for scale in _SCALES:
-        sw, sh = item_w * scale, item_h * scale
-        if not _size_close(sw, sh, vw, vh):
-            continue
-        err = abs(sw - vw) + abs(sh - vh)
-        if best is None or err < best:
-            best = err
-    return best
-
-
-def match_items(items: list[dict], video_width: float, video_height: float) -> dict | None:
-    """Pick a unique size match. Returns a copy of the winning item, or None."""
-    vw, vh = float(video_width), float(video_height)
-    if vw <= 0 or vh <= 0:
-        return None
-    candidates: list[tuple[float, dict]] = []
-    for item in items:
-        err = _best_scale_error(float(item["width"]), float(item["height"]), vw, vh)
-        if err is None:
-            continue
-        candidates.append((err, item))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda pair: pair[0])
-    best_err, best = candidates[0]
-    if any(err <= best_err + _AMBIGUOUS_ERR for err, _item in candidates[1:]):
-        return None
-    return dict(best)
-
-
 def match_captured_surface(surface: str, video_width: float, video_height: float, surface_id: int | None = None) -> dict | None:
-    """Find an initial size match, then track the same on-screen ID through resizes.
-
-    Returns Quartz (top-left) bounds, or None when there is no unique match.
-    Does not fall back to the main display.
-    """
+    """Resolve an explicitly selected native ID, independent of capture size."""
+    if surface_id is None:
+        return None
     kind = (surface or "window").lower()
     if kind == "monitor":
         items = [{"kind": "monitor", **d} for d in list_displays()]
@@ -205,7 +159,7 @@ def match_captured_surface(surface: str, video_width: float, video_height: float
     if surface_id is not None:
         items = [item for item in items if item.get("id") == surface_id]
     # Once identified, the window ID remains stable across moves and resizes.
-    best = dict(items[0]) if len(items) == 1 and surface_id is not None else match_items(items, video_width, video_height)
+    best = dict(items[0]) if len(items) == 1 else None
     if not best:
         return None
     return {
